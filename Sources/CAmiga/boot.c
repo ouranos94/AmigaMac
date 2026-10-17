@@ -1,0 +1,31 @@
+/* System start: memory, traps, exec, devices, dos. os_start() (shell.c)
+ * then creates the first Shell and hands over to the scheduler. */
+#include "os.h"
+#include "sched.h"
+#include "gfx.h"
+#include "wb.h"
+#include <stdlib.h>
+#include <string.h>
+
+#define MEM_SIZE (32u << 20)                 /* 32 MB of 68k address space */
+
+int os_boot(const char *sysdir) {
+    mem_init(MEM_SIZE);
+    trap_init();
+    heap_init(0x1000, MEM_SIZE);             /* below: vectors, SysBase pointer, stubs */
+    sched_init();
+    exec_init();
+    timer_init();
+    utility_init();
+    gfx_init();
+    layers_init();
+    intuition_init();
+    gadtools_init();
+    icon_init();
+    asl_init();
+    workbench_init();
+    char abs[1024];
+    dos_init(realpath(sysdir, abs) ? abs : sysdir);
+    shell_init();
+    return 1;
+}

@@ -1,0 +1,28 @@
+#!/bin/sh
+# Build AmigaMac.app (release) with its system template.
+set -e
+cd "$(dirname "$0")/.."
+swift build -c release --product AmigaMac
+APP=build/AmigaMac.app
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/System"
+cp .build/release/AmigaMac "$APP/Contents/MacOS/AmigaMac"
+# system template: everything in System/ except the RAM disk
+( cd System && find . -path ./.ram -prune -o -type f -print | cpio -pdm "../$APP/Contents/Resources/System" 2>/dev/null )
+cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>AmigaMac</string>
+  <key>CFBundleDisplayName</key><string>AmigaMac</string>
+  <key>CFBundleIdentifier</key><string>local.amigamac</string>
+  <key>CFBundleExecutable</key><string>AmigaMac</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
+echo "$APP"

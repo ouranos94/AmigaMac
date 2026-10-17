@@ -1,0 +1,7 @@
+#!/bin/sh
+# vcc: compile Amiga C programs with vbcc + NDK 3.2 headers (development tool only)
+#   tools/vcc -o System/C/Prog prog.c
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export VBCC="$HERE/../../tools/vbcc/sdk"
+export PATH="$VBCC/bin:$PATH"
+exec vc +"$VBCC/config/aos68k" -c99 -cpu=68020 -I"$HERE/../../tools/ndk/inc/Include_H" "$@"

@@ -1,0 +1,6 @@
+tools/oracle/
+tools/cpucheck
+.build/
+System/.ram/
+build/
+.DS_Store
