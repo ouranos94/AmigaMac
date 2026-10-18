@@ -178,6 +178,11 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   traverse avant Intuition, `IND_WRITEEVENT`, `PeekQualifier`), requêtes à l'ancienne
   `Request`/`EndRequest`, `SetABPenDrMd`, `InitGels`, `PubScreenStatus`.
   `S:User-Startup` est exécuté au démarrage s'il existe (assigns des logiciels installés).
+- **reqtools.library** (v38) : requêtes de fichier, de police et de mode d'écran (par
+  asl.library), messages (`rtEZRequestA`, par EasyRequest), saisie d'une chaîne ou d'un
+  nombre (`rtGetStringA`, `rtGetLongA`), gestionnaires de requête (`RT_ReqHandler`),
+  verrouillage des fenêtres, `rtSpread`, `rtSetReqPosition`. ReqToolsBase porte les
+  bases d'Intuition, graphics, dos, gadtools et utility, que les programmes y lisent.
 - **commodities.library** : brokers (unicité, `CXCMD_UNIQUE`, `CXCMD_LIST_CHG`), objets
   filtre, émetteur, signal, traduction et personnalisé, descriptions de raccourcis
   (`ParseIX` : « ctrl alt d », « rawmouse lbutton », « -upstroke f1 »…), `MatchIX`,
@@ -214,6 +219,17 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   `BestCModeIDTagList`, liste des modes… ScreenMode propose 16 et 24 bits. Visage
   affiche ainsi une image ILBM 24 bits sans perte. La mémoire Amiga passe à 256 Mo.
   Les modes PAL restent à 256 couleurs, comme sur un vrai Amiga.
+- **Son et minuteurs matériels (exception limitée)** : les logiciels de musique
+  pilotent directement la puce son et les minuteurs. AmigaMac reproduit donc, et
+  seulement cela, les 4 voies de **Paula** (registres `$DFF0A0`–`$DFF0DF`, DMACON,
+  INTENA, INTREQ : échantillons lus en mémoire Amiga, rebouclage, mixés vers le son du
+  Mac ; le DMA maître est allumé comme le laisse le système au démarrage) et les minuteurs des deux **CIA** (`ciaa`/`ciab.resource`, AddICRVector,
+  AbleICR, SetICR, horloge E à 709 379 Hz). Une tâche d'interruption appelle le code
+  68k des programmes : minuteurs CIA, interruptions logicielles (`Cause`), serveurs du temps mort vertical (`AddIntServer`,
+  50 Hz) et interruptions audio (`SetIntVector`). Les puces d'affichage (blitter,
+  copper) ne sont pas reproduites : un programme qui construit lui-même son affichage
+  (ProTracker) tourne mais reste invisible. `AMIGAMAC_HW=1` journalise les autres
+  registres matériels écrits.
 - **Fond et organisation** : le Workbench lit `ENV:Sys/wbpattern.prefs` (format
   WBPattern, image en mosaïque, centrée ou à l'échelle) et affiche l'image nommée
   derrière le bureau ; le fond AmigaMac (dégradé et nom, dessin original) est produit
@@ -260,6 +276,9 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
 | MouseBlanker 1.21 (util/cdity) | commodité, cache le pointeur | fonctionne (sprite 0) |
 | Spliner 1.7 (util/cdity) | commodité, économiseur d'écran | fonctionne (veille et réveil) |
 | KeyCall 1.3.2 (util/cdity) | raccourcis de lancement (gestionnaire d'entrée) | se lance |
+| ProTracker 3.15 (mus/edit) | tracker | démarre (son et minuteurs pris en charge) ; interface invisible : elle passe par le blitter et le copper |
+| DigiBooster 1.7 (mus/edit) | tracker 8 voies | démarre ; interface invisible (copper et registres d'affichage) |
+| HippoPlayer 2.45 (mus/play) | lecteur de modules | fonctionne : fenêtre, liste, lecture des modules par Paula et les minuteurs CIA (reqtools.library) |
 | 0Utils (util/cli) | 25 commandes Shell pour scripts (Open/ReadLn/WriteLn, SRun, Exists…) | fonctionnent, sauf `Window` (binaire défectueux dans l'archive) |
 
 Corrigé en chemin : pile superviseur des tâches, `CreateMsgPort` qui laisse le port

@@ -30,6 +30,7 @@ int os_boot(const char *sysdir) {
     inputdevice_init();
     commodities_init();
     cybergfx_init();
+    cia_init();
     rexxsyslib_init();
     gfx_init();
     layers_init();
@@ -41,6 +42,7 @@ int os_boot(const char *sysdir) {
     datatypes_init();
     char abs[1024];
     dos_init(realpath(sysdir, abs) ? abs : sysdir);
+    reqtools_init();
     shell_init();
     return 1;
 }

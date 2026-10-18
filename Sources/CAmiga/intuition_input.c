@@ -1272,8 +1272,10 @@ static int split_labels(const char *s, char out[][64], int max) {
     return n;
 }
 
+uint32_t intuition_format(M68K *c, uint32_t fmt, uint32_t args, char *out, int max) { return format(c, fmt, args, out, max); }
+
 static uint32_t easy_build(M68K *c, uint32_t refwin, uint32_t es, uint32_t args) {
-    char title[128] = "Requête système", fmtd[1024], gads[256];
+    char title[128] = "Requ\xeate syst\xe8me", fmtd[1024], gads[256];
     if (rd32(es + EasyStruct_es_Title)) str_get(rd32(es + EasyStruct_es_Title), title, sizeof title);
     else if (refwin && rd32(refwin + Window_Title)) str_get(rd32(refwin + Window_Title), title, sizeof title);
     uint32_t next = format(c, rd32(es + EasyStruct_es_TextFormat), args, fmtd, sizeof fmtd);
@@ -1310,7 +1312,7 @@ static uint32_t i_AutoRequest(M68K *c) {
     if (c->a[2]) { itext_chain(c->a[2], labels[nb], 64); nb++; }
     if (c->a[3]) { itext_chain(c->a[3], labels[nb], 64); nb++; }
     if (!nb) { strcpy(labels[0], "OK"); nb = 1; }
-    uint32_t win = build_request(c, c->a[0], "Requête système", body, labels, nb);
+    uint32_t win = build_request(c, c->a[0], "Requ\xeate syst\xe8me", body, labels, nb);
     int r = request_wait(win, 1);
     free_request(win);
     return nb == 2 ? (r == 1 ? DOSTRUE : 0) : (c->a[2] ? DOSTRUE : 0);
@@ -1322,7 +1324,7 @@ static uint32_t i_BuildSysRequest(M68K *c) {
     if (c->a[2]) { itext_chain(c->a[2], labels[nb], 64); nb++; }
     if (c->a[3]) { itext_chain(c->a[3], labels[nb], 64); nb++; }
     if (!nb) { strcpy(labels[0], "OK"); nb = 1; }
-    return build_request(c, c->a[0], "Requête système", body, labels, nb);
+    return build_request(c, c->a[0], "Requ\xeate syst\xe8me", body, labels, nb);
 }
 
 const NativeEntry intui_input_natives[] = {

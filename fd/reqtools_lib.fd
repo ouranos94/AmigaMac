@@ -1,0 +1,29 @@
+* reqtools.library (v38): the public interface, offsets as in the published
+* headers
+##base _ReqToolsBase
+##bias 30
+##public
+rtAllocRequestA(type,taglist)(d0/a0)
+rtFreeRequest(req)(a1)
+rtFreeReqBuffer(req)(a1)
+rtChangeReqAttrA(req,taglist)(a1/a0)
+rtFileRequestA(filereq,file,title,taglist)(a1/a2/a3/a0)
+rtFreeFileList(filelist)(a0)
+rtEZRequestA(bodyfmt,gadfmt,reqinfo,argarray,taglist)(a1/a2/a3/a4/a0)
+rtGetStringA(buffer,maxchars,title,reqinfo,taglist)(a1,d0,a2/a3/a0)
+rtGetLongA(longptr,title,reqinfo,taglist)(a1/a2/a3/a0)
+rtLockPrefs()()
+rtUnlockPrefs()()
+rtFontRequestA(fontreq,title,taglist)(a1/a3/a0)
+rtPaletteRequestA(title,reqinfo,taglist)(a2/a3/a0)
+rtReqHandlerA(handlerinfo,sigs,taglist)(a1,d0,a0)
+rtSetWaitPointer(window)(a0)
+rtGetVScreenSize(screen,widthptr,heightptr)(a0/a1/a2)
+rtSetReqPosition(reqpos,newwindow,screen,window)(d0,a0/a1/a2)
+rtSpread(posarray,sizearray,length,min,max,num)(a0/a1,d0/d1/d2/d3)
+rtScreenToFrontSafely(screen)(a0)
+rtScreenModeRequestA(screenmodereq,title,taglist)(a1/a3/a0)
+rtCloseWindowSafely(window)(a0)
+rtLockWindow(window)(a0)
+rtUnlockWindow(window,winlock)(a0/a1)
+##end

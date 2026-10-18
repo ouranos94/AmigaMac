@@ -15,6 +15,7 @@ extern uint32_t mem_size;
 void mem_init(uint32_t size);
 /* out of RAM: logged; the few hardware registers programs poll answer something sensible */
 uint32_t mem_fault(uint32_t addr, int write, int size);
+void mem_wfault(uint32_t addr, uint32_t value, int size);   /* a write there: Paula and the CIAs answer */
 
 /* $A00000-$FFFFFF is the Amiga's hardware (CIAs, custom chips, ROM): never RAM here */
 #define HW_LO 0x00A00000u
@@ -36,15 +37,15 @@ static inline uint32_t rd32(uint32_t a) {
     return (uint32_t)mem[a] << 24 | (uint32_t)mem[a + 1] << 16 | (uint32_t)mem[a + 2] << 8 | mem[a + 3];
 }
 static inline void wr8(uint32_t a, uint32_t v) {
-    if (!mem_ok(a, 1)) { mem_fault(a, 1, 1); return; }
+    if (!mem_ok(a, 1)) { mem_wfault(a, v, 1); return; }
     mem[a] = (uint8_t)v;
 }
 static inline void wr16(uint32_t a, uint32_t v) {
-    if (!mem_ok(a, 2)) { mem_fault(a, 1, 2); return; }
+    if (!mem_ok(a, 2)) { mem_wfault(a, v, 2); return; }
     mem[a] = (uint8_t)(v >> 8); mem[a + 1] = (uint8_t)v;
 }
 static inline void wr32(uint32_t a, uint32_t v) {
-    if (!mem_ok(a, 4)) { mem_fault(a, 1, 4); return; }
+    if (!mem_ok(a, 4)) { mem_wfault(a, v, 4); return; }
     mem[a] = (uint8_t)(v >> 24); mem[a + 1] = (uint8_t)(v >> 16);
     mem[a + 2] = (uint8_t)(v >> 8); mem[a + 3] = (uint8_t)v;
 }

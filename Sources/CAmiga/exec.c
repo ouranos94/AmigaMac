@@ -926,9 +926,30 @@ static uint32_t f_Deallocate(M68K *c) {
     return 0;
 }
 
+extern uint32_t exec_add_int_server(uint32_t num, uint32_t is);
+extern uint32_t exec_rem_int_server(uint32_t num, uint32_t is);
+extern uint32_t exec_set_int_vector(uint32_t num, uint32_t is);
+/* Cause(interrupt): a software interrupt, run now: A1 = is_Data, A5 = is_Code */
+static uint32_t f_Cause(M68K *c) {
+    uint32_t is = c->a[1];
+    if (!is || !rd32(is + 18)) return 0;
+    uint32_t d[8], a[8];
+    memcpy(d, c->d, sizeof d); memcpy(a, c->a, sizeof a);
+    c->a[1] = rd32(is + 14);
+    c->a[5] = rd32(is + 18);
+    c->a[6] = SysBase;
+    cpu_call(c, rd32(is + 18));
+    memcpy(c->d, d, sizeof d); memcpy(c->a, a, sizeof a);
+    return 0;
+}
+static uint32_t f_AddIntServer(M68K *c) { return exec_add_int_server(c->d[0], c->a[1]); }
+static uint32_t f_RemIntServer(M68K *c) { return exec_rem_int_server(c->d[0], c->a[1]); }
+static uint32_t f_SetIntVector(M68K *c) { return exec_set_int_vector(c->d[0], c->a[1]); }
+
 static const NativeEntry exec_natives[] = {
     { "AllocMem", f_AllocMem }, { "FreeMem", f_FreeMem }, { "AllocVec", f_AllocVec },
     { "Allocate", f_Allocate }, { "Deallocate", f_Deallocate },
+    { "Cause", f_Cause }, { "AddIntServer", f_AddIntServer }, { "RemIntServer", f_RemIntServer }, { "SetIntVector", f_SetIntVector },
     { "FreeVec", f_FreeVec }, { "AvailMem", f_AvailMem }, { "TypeOfMem", f_TypeOfMem },
     { "AllocEntry", f_AllocEntry }, { "FreeEntry", f_FreeEntry },
     { "CopyMem", f_CopyMem }, { "CopyMemQuick", f_CopyMem },

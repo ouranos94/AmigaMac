@@ -31,6 +31,83 @@ typedef struct {
 
 static Voice voices[NVOICES];
 static pthread_mutex_t mix = PTHREAD_MUTEX_INITIALIZER;
+
+/* ---- Paula, driven by programs through its registers ($DFF0A0-$DFF0DF) ----------
+ * Each channel plays 8-bit signed samples straight from Amiga memory while its
+ * DMA is on; at the end of a block it takes the location and length registers
+ * again (the hardware's looping), period and volume as written. */
+typedef struct {
+    uint32_t lc;                    /* AUDxLC, AUDxLEN (words), AUDxPER, AUDxVOL as written */
+    uint16_t len, per, vol;
+    uint32_t ptr, left;             /* playing: address, bytes to go */
+    double pos;                     /* within the current sample */
+    int on;
+} PChan;
+static PChan pch[4];
+/* as the system leaves them after boot: DMA master switch and the display's DMA on,
+ * interrupts master switch on (a program only turns its own channels on and off) */
+static uint16_t dmacon = 0x03F0, intena = 0x4000, intreq;
+static void start_output(void);
+
+static void pchan_start(PChan *p) {
+    p->ptr = p->lc;
+    p->left = p->len ? (uint32_t)p->len * 2 : 131072;
+    p->pos = 0;
+    p->on = 1;
+}
+
+void paula_write(int reg, uint16_t v) {
+    pthread_mutex_lock(&mix);
+    if (reg >= 0xA0 && reg < 0xE0) {
+        PChan *p = &pch[(reg - 0xA0) >> 4];
+        switch (reg & 0x0F) {
+        case 0x0: p->lc = (p->lc & 0xFFFF) | (uint32_t)v << 16; break;
+        case 0x2: p->lc = (p->lc & 0xFFFF0000u) | (v & 0xFFFE); break;
+        case 0x4: p->len = v; break;
+        case 0x6: p->per = v; break;
+        case 0x8: p->vol = v & 0x7F; break;
+        }
+    } else if (reg == 0x96) {                                   /* DMACON: bit 15 sets, else clears */
+        uint16_t old = dmacon;
+        dmacon = (v & 0x8000) ? (dmacon | (v & 0x7FFF)) : (dmacon & ~v);
+        for (int i = 0; i < 4; i++) {
+            int was = (old & 0x200) && (old & (1 << i)), now = (dmacon & 0x200) && (dmacon & (1 << i));
+            if (now && !was) {
+                pchan_start(&pch[i]);
+                static int logged;
+                if (getenv("AMIGAMAC_HW") && logged++ < 12)
+                    os_log("Paula : voie %d, %u octets à $%06X, période %u, volume %u", i, pch[i].left, pch[i].lc, pch[i].per, pch[i].vol);
+            }
+            if (!now) pch[i].on = 0;
+        }
+        pthread_mutex_unlock(&mix);
+        if ((dmacon & 0x200) && (dmacon & 0xF)) start_output();   /* the Mac's output, from the first note */
+        return;
+    } else if (reg == 0x9A) intena = (v & 0x8000) ? (intena | (v & 0x7FFF)) : (intena & ~v);
+    else if (reg == 0x9C) intreq = (v & 0x8000) ? (intreq | (v & 0x7FFF)) : (intreq & ~v);
+    pthread_mutex_unlock(&mix);
+}
+uint32_t paula_dmacon(void) { return dmacon; }
+uint32_t paula_intena(void) { return intena; }
+uint32_t paula_intreq(void) { return intreq; }
+
+/* one output sample of Paula's channels, left and right */
+static void paula_mix(float *l, float *r) {
+    for (int i = 0; i < 4; i++) {
+        PChan *p = &pch[i];
+        if (!p->on) continue;
+        uint32_t a = p->ptr + (uint32_t)p->pos;
+        float s = (a < mem_size ? (int8_t)mem[a] : 0) / 128.0f * (p->vol > 64 ? 64 : p->vol) / 64.0f;
+        if (i == 0 || i == 3) *l += s; else *r += s;          /* channels 0 and 3 left, 1 and 2 right */
+        p->pos += PAL_CLOCK / (p->per < 124 ? 124 : p->per) / OUT_RATE;
+        while (p->pos >= p->left) {                             /* end of the block: the registers again */
+            p->pos -= p->left;
+            p->ptr = p->lc;
+            p->left = p->len ? (uint32_t)p->len * 2 : 131072;
+            intreq |= (uint16_t)(0x80 << i);                    /* AUDxINT, as the chip raises it */
+        }
+    }
+}
 static AudioQueueRef queue;
 static int started, muted, next_id = 1;
 
@@ -56,6 +133,7 @@ static void fill(void *user, AudioQueueRef q, AudioQueueBufferRef buf) {
                 if (v->cycles && --v->cycles == 0) { v->active = 0; free(v->pcm); v->pcm = 0; }
             }
         }
+        if (dmacon & 0x200) paula_mix(&l, &r);
         if (l > 1) l = 1; if (l < -1) l = -1;
         if (r > 1) r = 1; if (r < -1) r = -1;
         out[2 * f] = (int16_t)(l * 32000);

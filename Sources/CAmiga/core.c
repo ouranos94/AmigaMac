@@ -1,6 +1,7 @@
 /* Core services: 68k memory, heap, traps into native code, lists, strings. */
 #include "os.h"
 #include "sched.h"
+#include "audio.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,13 +38,51 @@ static int hw_read(uint32_t addr, int size, uint32_t *v) {
     case 0xDFF016: r = (b & 2) ? 0xFBFF : 0xFFFF; break;    /* POTGOR: bit 10 = right button */
     case 0xDFF004: r = (line >> 8) & 1; break;               /* VPOSR */
     case 0xDFF006: r = (line & 0xFF) << 8 | (hpos & 0xFF); break;   /* VHPOSR */
-    case 0xDFF00A: case 0xDFF00C: case 0xDFF002: case 0xDFF01C: case 0xDFF01E: r = 0; break;
-    default: return 0;
+    case 0xDFF00A: case 0xDFF00C: r = 0; break;
+    case 0xDFF002: r = paula_dmacon(); break;                 /* DMACONR */
+    case 0xDFF01C: r = paula_intena(); break;                 /* INTENAR */
+    case 0xDFF01E: r = paula_intreq(); break;                 /* INTREQR */
+    default:
+        if (size == 1 && addr >= 0xBFD000 && addr < 0xBFF000) { /* the CIAs' registers */
+            int which = (addr & 1) ? 0 : 1;                   /* odd: CIA-A, even: CIA-B */
+            *v = cia_read(which, (int)((addr >> 8) & 15));
+            return 1;
+        }
+        return 0;
     }
     if (size == 1) *v = (addr & 1) ? (r & 0xFF) : (r >> 8);
     else if (size == 2) *v = r;
     else { uint32_t lo = 0; hw_read(addr + 2, 2, &lo); *v = r << 16 | lo; }
     return 1;
+}
+
+/* writes to the hardware programs still talk to: Paula's sound and the CIAs' timers */
+static int hw_write(uint32_t addr, int size, uint32_t v) {
+    if (addr >= 0xDFF096 && addr < 0xDFF0E0) {
+        if (size == 4) { hw_write(addr, 2, v >> 16); return hw_write(addr + 2, 2, v & 0xFFFF); }
+        if (size == 1) v = (addr & 1) ? v & 0xFF : (v & 0xFF) << 8;
+        paula_write((int)((addr & ~1u) - 0xDFF000), (uint16_t)v);
+        return 1;
+    }
+    if (addr >= 0xBFD000 && addr < 0xBFF000) {
+        if (size == 1) { cia_write((addr & 1) ? 0 : 1, (int)((addr >> 8) & 15), (uint8_t)v); return 1; }
+        if (size == 2) {                                        /* a word reaches both chips */
+            cia_write(1, (int)((addr >> 8) & 15), (uint8_t)(v >> 8));
+            cia_write(0, (int)((addr >> 8) & 15), (uint8_t)v);
+            return 1;
+        }
+    }
+    if (addr >= 0xDFF000 && addr < 0xE00000) {                  /* other chip registers: no effect here */
+        static uint8_t seen[256];
+        if (getenv("AMIGAMAC_HW") && !seen[(addr >> 1) & 0xFF]++) os_log("registre $%03X écrit (%08X)", addr & 0xFFF, v);
+        return 1;
+    }
+    return 0;
+}
+
+void mem_wfault(uint32_t addr, uint32_t value, int size) {
+    if (hw_write(addr, size, value)) return;
+    mem_fault(addr, 1, size);
 }
 
 uint32_t mem_fault(uint32_t addr, int write, int size) {

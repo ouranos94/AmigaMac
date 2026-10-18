@@ -8,3 +8,12 @@ void host_audio_stop(int id);          /* -n: everything on channel n */
 void audio_init(void);
 void datatypes_init(void);
 #endif
+
+/* Paula's registers (offset from $DFF000), for programs that drive the chip */
+void paula_write(int reg, uint16_t value);
+uint32_t paula_dmacon(void);
+uint32_t paula_intena(void);
+uint32_t paula_intreq(void);
+/* the CIAs (0: CIA-A, 1: CIA-B), register 0-15 */
+uint32_t cia_read(int which, int reg);
+void cia_write(int which, int reg, uint8_t value);

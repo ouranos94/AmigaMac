@@ -1328,6 +1328,31 @@ static const FdFunc fd_realtime[] = {
     { 78, "FindConductor", "a0" },
     { 84, "GetPlayerAttrsA", "a0/a1" },
 };
+static const FdFunc fd_reqtools[] = {
+    { 30, "rtAllocRequestA", "d0/a0" },
+    { 36, "rtFreeRequest", "a1" },
+    { 42, "rtFreeReqBuffer", "a1" },
+    { 48, "rtChangeReqAttrA", "a1/a0" },
+    { 54, "rtFileRequestA", "a1/a2/a3/a0" },
+    { 60, "rtFreeFileList", "a0" },
+    { 66, "rtEZRequestA", "a1/a2/a3/a4/a0" },
+    { 72, "rtGetStringA", "a1/d0/a2/a3/a0" },
+    { 78, "rtGetLongA", "a1/a2/a3/a0" },
+    { 84, "rtLockPrefs", "" },
+    { 90, "rtUnlockPrefs", "" },
+    { 96, "rtFontRequestA", "a1/a3/a0" },
+    { 102, "rtPaletteRequestA", "a2/a3/a0" },
+    { 108, "rtReqHandlerA", "a1/d0/a0" },
+    { 114, "rtSetWaitPointer", "a0" },
+    { 120, "rtGetVScreenSize", "a0/a1/a2" },
+    { 126, "rtSetReqPosition", "d0/a0/a1/a2" },
+    { 132, "rtSpread", "a0/a1/d0/d1/d2/d3" },
+    { 138, "rtScreenToFrontSafely", "a0" },
+    { 144, "rtScreenModeRequestA", "a1/a3/a0" },
+    { 150, "rtCloseWindowSafely", "a0" },
+    { 156, "rtLockWindow", "a0" },
+    { 162, "rtUnlockWindow", "a0/a1" },
+};
 static const FdFunc fd_requester[] = {
     { 30, "REQUESTER_GetClass", "" },
 };
@@ -1538,6 +1563,7 @@ const FdLib fd_libs[] = {
     { "radiobutton", fd_radiobutton, 5 },
     { "ramdrive", fd_ramdrive, 2 },
     { "realtime", fd_realtime, 10 },
+    { "reqtools", fd_reqtools, 23 },
     { "requester", fd_requester, 1 },
     { "rexxsyslib", fd_rexxsyslib, 17 },
     { "scroller", fd_scroller, 1 },
@@ -1555,4 +1581,4 @@ const FdLib fd_libs[] = {
     { "wb", fd_wb, 19 },
     { "window", fd_window, 1 },
 };
-const int fd_lib_count = 77;
+const int fd_lib_count = 78;
