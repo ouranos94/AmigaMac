@@ -897,6 +897,11 @@ static int last_mx, last_my;
 static void dispatch(InputEv *ev) {
     if (ev->type == IEV_TICK) { handle_tick(); return; }
     if (ev->type == IEV_KEY) { handle_key(ev->code, ev->ch, ev->qual); return; }
+    if (ev->screen == AMIGA_CHIP_SCREEN) {                      /* the display chips show an Intuition screen's bitmap */
+        int id, x, y;
+        if (!chip_screen_point(ev->x, ev->y, &id, &x, &y)) return;
+        ev->screen = id; ev->x = x; ev->y = y;
+    }
     NScreen *s = screen_by_id(ev->screen);
     if (!s) return;
     if (ev->type == IEV_MOUSE) handle_move(s, ev->x, ev->y);

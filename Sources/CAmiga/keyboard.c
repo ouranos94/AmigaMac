@@ -2,6 +2,7 @@
  * (which keys are held down) and reset handlers. Key events reach programs
  * through input.device and Intuition, so KBD_READEVENT returns nothing. */
 #include "os.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define IO_COMMAND 28
@@ -125,12 +126,47 @@ static uint32_t in_BeginIO(M68K *c) {
 /* PeekQualifier(): the qualifier keys and buttons held now */
 static uint32_t in_PeekQualifier(M68K *c) { (void)c; return (uint32_t)input_qualifier() & 0xFFFF; }
 
+/* on the display chips' picture, the program moves its own pointer (sprite 0)
+   by the mouse's counts, each in its own way: the counts sent bring the sprite
+   onto the Mac's pointer, with the gain the program showed (picture pixels per
+   count, a power of two from 1/4 to 8, kept here times 4) */
+static int snap_gain(int moved, int sent) {
+    int g = (4 * moved + sent / 2) / sent;                      /* times 4 */
+    return g >= 24 ? 32 : g >= 12 ? 16 : g >= 6 ? 8 : g >= 3 ? 4 : g >= 2 ? 2 : 1;
+}
+static void chip_mouse_delta(int x, int y, int *dx, int *dy) {
+    static int gx = 8, gy = 4, sent_x, sent_y, prev_x = -1, prev_y;
+    int px, py;
+    if (chip_pointer(&px, &py)) {
+        if (prev_x >= 0) {
+            int mx = px - prev_x, my = py - prev_y;
+            if (abs(sent_x) >= 4 && mx && (mx > 0) == (sent_x > 0)) gx = snap_gain(mx, sent_x);
+            if (abs(sent_y) >= 4 && my && (my > 0) == (sent_y > 0)) gy = snap_gain(my, sent_y);
+        }
+        prev_x = px; prev_y = py;
+        *dx = (x - px) * 4 / gx;
+        *dy = (y - py) * 4 / gy;
+        sent_x = *dx; sent_y = *dy;
+    } else {                                                    /* no new frame yet: the Mac's move alone */
+        *dx = *dx * 4 / gx;
+        *dy = *dy * 4 / gy;
+        sent_x += *dx; sent_y += *dy;
+    }
+}
+
 /* called by the input task for each event; 0 when a handler ate it */
 extern int cx_active(void);
 extern int cx_filter(M68K *c, uint32_t ie);
 
 int input_handlers_filter(InputEv *ev) {
     if (ev->qual & 0x10000) { ev->qual &= 0xFFFF; return 1; }  /* put in by commodities: on to Intuition */
+    int move_dx = 0, move_dy = 0;                               /* a move, as the mouse counts it */
+    if (ev->type == IEV_MOUSE) {
+        if (last_x >= 0) { move_dx = ev->x - last_x; move_dy = ev->y - last_y; }
+        if (ev->screen == AMIGA_CHIP_SCREEN) chip_mouse_delta(ev->x, ev->y, &move_dx, &move_dy);
+        last_x = ev->x; last_y = ev->y;
+        chip_mouse_moved(move_dx, move_dy);
+    }
     int cx = cx_active();
     if (!nhandlers && !cx) return 1;
     NTask *me = sched_current();
@@ -144,8 +180,7 @@ int input_handlers_filter(InputEv *ev) {
     case IEV_KEY: cls = IECLASS_RAWKEY; code = ev->code; qual = (qual & 0xFF00) | (ev->qual & 0xFF); break;
     case IEV_MOUSE:
         cls = IECLASS_RAWMOUSE; code = 0xFF; qual |= 0x8000;      /* IEQUALIFIER_RELATIVEMOUSE */
-        if (last_x >= 0) { x = ev->x - last_x; y = ev->y - last_y; }
-        last_x = ev->x; last_y = ev->y;
+        x = move_dx; y = move_dy;
         break;
     case IEV_BUTTON:
         cls = IECLASS_RAWMOUSE; qual |= 0x8000;

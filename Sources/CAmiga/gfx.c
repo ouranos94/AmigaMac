@@ -1178,7 +1178,9 @@ static uint32_t g_WaitTOF(M68K *c) {
 }
 static uint32_t g_VBeamPos(M68K *c) { (void)c; return (uint32_t)((now_us() % 20000) * 312 / 20000); }
 static uint32_t g_nop(M68K *c) { (void)c; return 0; }
-static uint32_t g_OwnBlitter(M68K *c) { (void)c; return 0; }
+/* the blitter is done at once: nothing to wait for. Programs count on these
+   leaving every register as it was, D0 included, as the Amiga's do */
+static uint32_t g_OwnBlitter(M68K *c) { return c->d[0]; }
 
 /* ---- regions: kept as rectangle lists (layers' clip regions) ------------------- */
 
@@ -1445,7 +1447,7 @@ static const NativeEntry gfx_natives[] = {
     { "ReadPixelArray8", g_ReadPixelArray8 }, { "WritePixelLine8", g_WritePixelLine8 },
     { "ReadPixelLine8", g_ReadPixelLine8 },
     { "WaitTOF", g_WaitTOF }, { "WaitBOVP", g_WaitTOF }, { "VBeamPos", g_VBeamPos },
-    { "WaitBlit", g_nop }, { "OwnBlitter", g_OwnBlitter }, { "DisownBlitter", g_nop },
+    { "WaitBlit", g_OwnBlitter }, { "OwnBlitter", g_OwnBlitter }, { "DisownBlitter", g_OwnBlitter },
     { "LockLayerRom", g_nop }, { "UnlockLayerRom", g_nop }, { "InitVPort", g_nop }, { "InitView", g_nop },
     { "MakeVPort", g_nop }, { "MrgCop", g_nop }, { "LoadView", g_nop }, { "FreeVPortCopLists", g_nop },
     { "FreeCprList", g_nop }, { "FreeCopList", g_nop }, { "VideoControl", g_nop },

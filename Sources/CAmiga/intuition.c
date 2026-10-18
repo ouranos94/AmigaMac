@@ -1328,6 +1328,7 @@ static void blit_planar(uint32_t *out, int ow, int oh, BM *b, int ox, int oy, in
 
 /* host: render screen 'id' into an RGBA buffer of its size; returns 0 if gone */
 int amiga_display_render(int id, uint32_t *out, int ow, int oh) {
+    if (id == AMIGA_CHIP_SCREEN) return chip_display_render(out, ow, oh);
     pthread_mutex_lock(&disp_lock);
     NScreen *s = screens;
     while (s && s->id != id) s = s->next;
@@ -1360,6 +1361,7 @@ int amiga_display_render(int id, uint32_t *out, int ow, int oh) {
 }
 
 int amiga_display_size(int id, int *w, int *h, int *hires, int *lace) {
+    if (id == AMIGA_CHIP_SCREEN) { *hires = 1; *lace = 0; return chip_display_size(w, h); }
     pthread_mutex_lock(&disp_lock);
     NScreen *s = screens;
     while (s && s->id != id) s = s->next;
@@ -1370,7 +1372,7 @@ int amiga_display_size(int id, int *w, int *h, int *hires, int *lace) {
 
 uint32_t amiga_display_serial(void) {
     extern uint32_t gfx_changes(void);
-    return gfx_changes();
+    return gfx_changes() + chip_frames();
 }
 
 int intui_active_screen_id(void) {

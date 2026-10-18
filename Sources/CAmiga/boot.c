@@ -33,6 +33,7 @@ int os_boot(const char *sysdir) {
     cia_init();
     rexxsyslib_init();
     gfx_init();
+    chip_init();
     layers_init();
     intuition_init();
     gadtools_init();

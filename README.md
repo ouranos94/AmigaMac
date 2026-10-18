@@ -219,17 +219,33 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   `BestCModeIDTagList`, liste des modes… ScreenMode propose 16 et 24 bits. Visage
   affiche ainsi une image ILBM 24 bits sans perte. La mémoire Amiga passe à 256 Mo.
   Les modes PAL restent à 256 couleurs, comme sur un vrai Amiga.
-- **Son et minuteurs matériels (exception limitée)** : les logiciels de musique
-  pilotent directement la puce son et les minuteurs. AmigaMac reproduit donc, et
-  seulement cela, les 4 voies de **Paula** (registres `$DFF0A0`–`$DFF0DF`, DMACON,
-  INTENA, INTREQ : échantillons lus en mémoire Amiga, rebouclage, mixés vers le son du
-  Mac ; le DMA maître est allumé comme le laisse le système au démarrage) et les minuteurs des deux **CIA** (`ciaa`/`ciab.resource`, AddICRVector,
-  AbleICR, SetICR, horloge E à 709 379 Hz). Une tâche d'interruption appelle le code
-  68k des programmes : minuteurs CIA, interruptions logicielles (`Cause`), serveurs du temps mort vertical (`AddIntServer`,
-  50 Hz) et interruptions audio (`SetIntVector`). Les puces d'affichage (blitter,
-  copper) ne sont pas reproduites : un programme qui construit lui-même son affichage
-  (ProTracker) tourne mais reste invisible. `AMIGAMAC_HW=1` journalise les autres
-  registres matériels écrits.
+- **Puces de l'Amiga, pour les programmes qui les pilotent eux-mêmes** : l'OS reste
+  natif, mais les trackers, jeux et démos contournent le système et programment
+  directement le matériel. AmigaMac reproduit donc ce que font ces registres
+  (`chipset.c`, `audio.c`, `cia.c`, d'après la documentation publique du matériel) :
+  - **Paula** : les 4 voies son (registres `$DFF0A0`–`$DFF0DF`, DMACON, INTENA,
+    INTREQ ; échantillons lus en mémoire Amiga, rebouclage, mode manuel `AUDxDAT`,
+    interruptions audio au début de chaque bloc), mixées vers le son du Mac ;
+  - les minuteurs des deux **CIA** (`ciaa`/`ciab.resource`, AddICRVector, AbleICR,
+    SetICR, horloge E à 709 379 Hz) ;
+  - le **copper** (MOVE, WAIT, SKIP, COPJMP), exécuté ligne par ligne cinquante fois
+    par seconde, avec les changements de couleurs en cours de ligne ;
+  - les **plans de bits** : 1 à 6 plans, basse ou haute résolution, double champ de
+    jeu, demi-teinte (EHB), HAM, fenêtre d'affichage, décalages, modulos ;
+  - les 8 **sprites** (DMA, paires attachées) ;
+  - le **blitter**, exécuté d'un coup à l'écriture de `BLTSIZE` : 4 canaux,
+    décalages, masques, mintermes, mode descendant, remplissage, tracé de lignes ;
+  - les entrées : bouton de la souris sur le CIA-A, compteurs `JOY0DAT`.
+
+  Une tâche d'interruption appelle le code 68k des programmes comme exec le fait
+  (A0 = `$DFF000`, A1 = données) : minuteurs CIA, interruptions logicielles
+  (`Cause`), temps mort vertical (`AddIntServer`, 50 Hz), copper, audio
+  (`SetIntVector`). Dès qu'un programme installe sa propre liste copper, son image
+  s'affiche dans une fenêtre Mac à part ; elle se ferme quand il remet la liste du
+  système (`GfxBase->copinit`) ou se termine. Le pointeur du Mac y est masqué : le
+  sprite du programme le remplace, et les mouvements envoyés le ramènent sous la
+  souris, au gain que le programme applique. Ce n'est pas exact au cycle près.
+  `AMIGAMAC_HW=1` journalise les voies son qui démarrent.
 - **Fond et organisation** : le Workbench lit `ENV:Sys/wbpattern.prefs` (format
   WBPattern, image en mosaïque, centrée ou à l'échelle) et affiche l'image nommée
   derrière le bureau ; le fond AmigaMac (dégradé et nom, dessin original) est produit
@@ -276,8 +292,8 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
 | MouseBlanker 1.21 (util/cdity) | commodité, cache le pointeur | fonctionne (sprite 0) |
 | Spliner 1.7 (util/cdity) | commodité, économiseur d'écran | fonctionne (veille et réveil) |
 | KeyCall 1.3.2 (util/cdity) | raccourcis de lancement (gestionnaire d'entrée) | se lance |
-| ProTracker 3.15 (mus/edit) | tracker | démarre (son et minuteurs pris en charge) ; interface invisible : elle passe par le blitter et le copper |
-| DigiBooster 1.7 (mus/edit) | tracker 8 voies | démarre ; interface invisible (copper et registres d'affichage) |
+| ProTracker 3.15 (mus/edit) | tracker | fonctionne : interface (copper, blitter, sprites), souris, page disque, chargement et lecture des modules |
+| DigiBooster 1.7 (mus/edit) | tracker 8 voies | fonctionne : interface, souris, pages (sampler), confirmation de sortie |
 | HippoPlayer 2.45 (mus/play) | lecteur de modules | fonctionne : fenêtre, liste, lecture des modules par Paula et les minuteurs CIA (reqtools.library) |
 | 0Utils (util/cli) | 25 commandes Shell pour scripts (Open/ReadLn/WriteLn, SRun, Exists…) | fonctionnent, sauf `Window` (binaire défectueux dans l'archive) |
 

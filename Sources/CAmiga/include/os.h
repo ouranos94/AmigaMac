@@ -31,6 +31,20 @@ void os_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 int amiga_display_size(int id, int *w, int *h, int *hires, int *lace);
 int amiga_display_render(int id, uint32_t *rgba, int w, int h);   /* 0xFFRRGGBB */
 uint32_t amiga_display_serial(void);                              /* changes when anything is drawn */
+/* the display chips' picture (chipset.c), shown while a program drives the copper itself */
+#define AMIGA_CHIP_SCREEN 0x4000
+void chip_init(void);
+void chip_write(uint32_t addr, int size, uint32_t v);
+void chip_frame(void);
+int chip_active(void);
+void chip_task_gone(uint32_t task);
+uint32_t chip_frames(void);
+uint32_t chip_dmaconr_bits(void);
+int chip_display_size(int *w, int *h);
+int chip_display_render(uint32_t *dst, int w, int h);
+void chip_mouse_moved(int dx, int dy);
+int chip_pointer(int *x, int *y);
+int chip_screen_point(int cx, int cy, int *id, int *sx, int *sy);
 
 /* ---- 68k heap (native bookkeeping, Amiga addresses) --------------------- */
 void heap_init(uint32_t start, uint32_t end);

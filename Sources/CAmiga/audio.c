@@ -49,14 +49,17 @@ static PChan pch[4];
 static uint16_t dmacon = 0x03F0, intena = 0x4000, intreq;
 static void start_output(void);
 
+/* DMA turned on: the channel takes its block's address and length, and says so (AUDxINT) */
 static void pchan_start(PChan *p) {
     p->ptr = p->lc;
     p->left = p->len ? (uint32_t)p->len * 2 : 131072;
     p->pos = 0;
     p->on = 1;
+    intreq |= (uint16_t)(0x80 << (p - pch));
 }
 
 void paula_write(int reg, uint16_t v) {
+    int wake = 0;
     pthread_mutex_lock(&mix);
     if (reg >= 0xA0 && reg < 0xE0) {
         PChan *p = &pch[(reg - 0xA0) >> 4];
@@ -66,6 +69,9 @@ void paula_write(int reg, uint16_t v) {
         case 0x4: p->len = v; break;
         case 0x6: p->per = v; break;
         case 0x8: p->vol = v & 0x7F; break;
+        case 0xA:                                               /* AUDxDAT: a word played by hand, then AUDxINT */
+            if (!p->on) { intreq |= (uint16_t)(0x80 << ((reg - 0xA0) >> 4)); wake = 1; }
+            break;
         }
     } else if (reg == 0x96) {                                   /* DMACON: bit 15 sets, else clears */
         uint16_t old = dmacon;
@@ -82,14 +88,18 @@ void paula_write(int reg, uint16_t v) {
         }
         pthread_mutex_unlock(&mix);
         if ((dmacon & 0x200) && (dmacon & 0xF)) start_output();   /* the Mac's output, from the first note */
+        cia_wake();                                             /* the audio interrupts, now */
         return;
     } else if (reg == 0x9A) intena = (v & 0x8000) ? (intena | (v & 0x7FFF)) : (intena & ~v);
     else if (reg == 0x9C) intreq = (v & 0x8000) ? (intreq | (v & 0x7FFF)) : (intreq & ~v);
+    if (reg == 0x9A && (v & 0x8000) && (v & 0x0780)) wake = 1;  /* audio interrupts enabled: pending ones go */
     pthread_mutex_unlock(&mix);
+    if (wake) cia_wake();
 }
 uint32_t paula_dmacon(void) { return dmacon; }
 uint32_t paula_intena(void) { return intena; }
 uint32_t paula_intreq(void) { return intreq; }
+void paula_raise(uint16_t bits) { intreq |= bits; }
 
 /* one output sample of Paula's channels, left and right */
 static void paula_mix(float *l, float *r) {

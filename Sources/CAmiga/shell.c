@@ -835,7 +835,8 @@ static int c_wait(int argc, char argv[][512], const char *rest) {
 static int c_input(int argc, char argv[][512], const char *rest) {
     (void)rest;
     if (argc < 2) { out("INPUT MOVE|CLICK|DOWN|UP|RCLICK|RDOWN|RUP x y, KEY texte, RAW code, CLOSE\n"); return 20; }
-    int id = intui_active_screen_id();
+    int id = intui_active_screen_id(), cw, ch;
+    if (chip_active() && chip_display_size(&cw, &ch)) id = AMIGA_CHIP_SCREEN;
     int x = argc > 2 ? atoi(argv[2]) : 0, y = argc > 3 ? atoi(argv[3]) : 0;
     InputEv e = { IEV_MOUSE, id, x, y, 0, 0, 0 };
     const char *op = argv[1];
@@ -952,11 +953,28 @@ static int c_break(int argc, char argv[][512], const char *rest) {
 
 static int c_help(int argc, char argv[][512], const char *rest);
 
-/* SNAPSHOT file: the active screen as composed for display, in PPM (testing aid) */
+/* PEEK address [bytes]: memory in hexadecimal (testing aid) */
+static int c_peek(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    if (argc < 2) { out("PEEK: required argument missing\n"); return 20; }
+    uint32_t a = (uint32_t)strtoul(argv[1][0] == '$' ? argv[1] + 1 : argv[1], 0, 16);
+    int n = argc > 2 ? atoi(argv[2]) : 16;
+    char line[128];
+    for (int i = 0; i < n; i += 16) {
+        int k = snprintf(line, sizeof line, "%06X:", a + (uint32_t)i);
+        for (int j = i; j < i + 16 && j < n; j += 2) k += snprintf(line + k, sizeof line - (size_t)k, " %04X", rd16(a + (uint32_t)j));
+        snprintf(line + k, sizeof line - (size_t)k, "\n");
+        out(line);
+    }
+    return 0;
+}
+
+/* SNAPSHOT file: the active screen (or the display chips' picture) as composed for display, in PPM (testing aid) */
 static int c_snapshot(int argc, char argv[][512], const char *rest) {
     (void)rest;
     if (argc < 2) { out("SNAPSHOT: required argument missing\n"); return 20; }
     int id = intui_active_screen_id(), w, h, hi, la;
+    if (chip_active() && chip_display_size(&w, &h)) id = AMIGA_CHIP_SCREEN;   /* the chips' picture covers it */
     if (!amiga_display_size(id, &w, &h, &hi, &la)) { out("SNAPSHOT: aucun écran\n"); return 20; }
     uint32_t *px = malloc(sizeof *px * (size_t)w * h);
     amiga_display_render(id, px, w, h);
@@ -1010,6 +1028,7 @@ static const struct { const char *name; Builtin fn; const char *help; } builtins
     { "STATUS", c_status, "liste les processus et tâches" },
     { "BREAK", c_break, "envoie Ctrl-C/D/E/F à un processus" },
     { "WAIT", c_wait, "attend n secondes" },
+    { "PEEK", c_peek, "mémoire en hexadécimal (tests)" },
     { "SNAPSHOT", c_snapshot, "image de l'écran actif (tests)" },
     { "INPUT", c_input, "injecte souris/clavier (tests)" },
     { "ENDCLI", c_endcli, "ferme le Shell" },

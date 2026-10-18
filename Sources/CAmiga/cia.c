@@ -38,6 +38,7 @@ static uint32_t servers[16][8];          /* AddIntServer, by priority order of a
 static uint32_t vectors[16];             /* SetIntVector */
 static uint64_t next_vblank;
 #define INTB_VERTB 5
+#define INTB_COPER 4
 
 static uint32_t now_count(CIA *k, int t) {
     if (!k->running[t]) return k->count[t];
@@ -56,7 +57,7 @@ static uint64_t due_us(CIA *k, int t) {
 static void schedule(void) {
     if (!cia_task) return;
     uint64_t next = 0;
-    int vb = servers[INTB_VERTB][0] != 0;
+    int vb = servers[INTB_VERTB][0] != 0 || chip_active();
     for (int i = 7; i <= 10 && !vb; i++) vb = vectors[i] != 0;
     if (vb) {                                                   /* a vertical blank every 20 ms */
         if (!next_vblank) next_vblank = now_us() + 20000;
@@ -124,10 +125,13 @@ void cia_write(int which, int reg, uint8_t v) {
     }
 }
 
-/* a handler, as the CIA interrupt server calls it: A1 = is_Data, A5 = is_Code */
+/* a handler, as exec calls it: A0 = the custom chips ($DFF000), A1 = is_Data,
+   A5 = is_Code, A6 = SysBase, D1 = INTENAR & INTREQR */
 static void call_vector(M68K *c, uint32_t is) {
     uint32_t d[8], a[8];
     memcpy(d, c->d, sizeof d); memcpy(a, c->a, sizeof a);
+    c->a[0] = 0xDFF000;
+    c->d[1] = paula_intena() & paula_intreq();
     c->a[1] = rd32(is + 14);
     c->a[5] = rd32(is + 18);
     c->a[6] = SysBase;
@@ -154,12 +158,21 @@ static void cia_main(void *arg) {
         uint64_t now = now_us();
         if (next_vblank && now + 500 >= next_vblank) {
             next_vblank = now + 20000;
+            paula_raise(0x20);                                  /* VERTB */
+            chip_frame();
             for (int k = 0; k < 8 && servers[INTB_VERTB][k]; k++) call_vector(c, servers[INTB_VERTB][k]);
-            /* audio interrupts Paula raised, if enabled (INTEN and the channel's bit) */
-            uint32_t req = paula_intreq(), ena = paula_intena();
-            for (int i = 7; i <= 10; i++)
-                if (vectors[i] && (ena & 0x4000) && (ena & req & (1u << i))) call_vector(c, vectors[i]);
+            /* the copper's interrupt (COPER), if its list raised it */
+            if ((paula_intreq() & 0x10) && (paula_intena() & 0x4010) == 0x4010 && servers[INTB_COPER][0]) {
+                for (int k = 0; k < 8 && servers[INTB_COPER][k]; k++) call_vector(c, servers[INTB_COPER][k]);
+                paula_write(0x9C, 0x0010);
+            }
         }
+        /* audio interrupts Paula raised, if enabled (INTEN and the channel's bit) */
+        uint32_t req = paula_intreq(), ena = paula_intena();
+        for (int i = 7; i <= 10; i++)
+            if (vectors[i] && (ena & 0x4000) && (ena & req & (1u << i))) {
+                call_vector(c, vectors[i]);
+            }
         for (int i = 0; i < 2; i++) {
             CIA *k = &cias[i];
             for (int t = 0; t < 2; t++) {
@@ -182,6 +195,9 @@ static void cia_main(void *arg) {
     }
 }
 
+void cia_kick(void) { schedule(); }
+void cia_wake(void) { if (cia_task) sched_timer_add(now_us(), TIMER_SIGNAL, cia_task, SIGF_CIA); }
+
 /* AddIntServer(intNum, interrupt) / RemIntServer / SetIntVector(intNum, interrupt): old one */
 uint32_t exec_add_int_server(uint32_t num, uint32_t is) {
     if (num > 15) return 0;
@@ -193,7 +209,7 @@ uint32_t exec_rem_int_server(uint32_t num, uint32_t is) {
     if (num > 15) return 0;
     for (int k = 0; k < 8; k++)
         if (servers[num][k] == is) { memmove(&servers[num][k], &servers[num][k + 1], sizeof(uint32_t) * (size_t)(7 - k)); servers[num][7] = 0; break; }
-    if (!servers[INTB_VERTB][0]) next_vblank = 0;
+    if (!servers[INTB_VERTB][0] && !chip_active()) next_vblank = 0;
     return 0;
 }
 uint32_t exec_set_int_vector(uint32_t num, uint32_t is) {

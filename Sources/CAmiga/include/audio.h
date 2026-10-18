@@ -14,6 +14,8 @@ void paula_write(int reg, uint16_t value);
 uint32_t paula_dmacon(void);
 uint32_t paula_intena(void);
 uint32_t paula_intreq(void);
+void paula_raise(uint16_t bits);
+void cia_wake(void);               /* the interrupt task runs at once (pending audio interrupts) */   /* INTREQ bits the hardware sets (VERTB) */
 /* the CIAs (0: CIA-A, 1: CIA-B), register 0-15 */
 uint32_t cia_read(int which, int reg);
 void cia_write(int which, int reg, uint8_t value);

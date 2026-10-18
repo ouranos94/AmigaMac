@@ -251,6 +251,7 @@ void sched_start(void) {
 
 void sched_exit(void) {
     NTask *me = current;
+    chip_task_gone(me->task);
     me->dead = 1;
     for (int i = 0; i < ntimers; i++)            /* its pending wake-ups go with it */
         if (timers[i].kind == TIMER_SIGNAL && timers[i].a == me->task) {
@@ -266,6 +267,7 @@ void sched_kill(uint32_t t) {
     NTask *n = sched_find(t);
     if (!n) return;
     if (n == current) sched_exit();
+    chip_task_gone(t);
     list_remove(t);
     wr8(t + TC_STATE, TS_REMOVED);
     n->dead = 1;
@@ -384,7 +386,15 @@ int sched_console_read(char *buf, int max) {
 
 /* ---- input events ----------------------------------------------------------- */
 
+/* the mouse buttons as the hardware sees them, at once (bit 0 left, 1 right, 2 middle) */
+static volatile int phys_buttons;
+int input_hw_buttons(void) { return phys_buttons; }
+
 void amiga_input_event(const InputEv *e) {
+    if (e->type == IEV_BUTTON) {
+        int bit = 1 << ((e->code < 0 ? -e->code : e->code) - 1);
+        if (e->code > 0) phys_buttons |= bit; else phys_buttons &= ~bit;
+    }
     pthread_mutex_lock(&evm);
     /* coalesce consecutive mouse moves */
     if (e->type == IEV_MOUSE && inq_len && inq[inq_len - 1].type == IEV_MOUSE && inq[inq_len - 1].screen == e->screen)

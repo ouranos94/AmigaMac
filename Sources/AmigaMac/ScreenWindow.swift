@@ -117,8 +117,11 @@ final class ScreenView: NSView {
         let xres: CGFloat = [1, 2, 4, 2][Int(max(0, min(3, hires)))]
         let yres: CGFloat = hires == 3 ? 2 : (lace != 0 ? 2 : 1)
         let scale = NSSize(width: bounds.width / CGFloat(self.w) * xres, height: bounds.height / CGFloat(self.h) * yres)
+        // the display chips' picture: the program's sprite is the pointer
+        if id == Int32(AMIGA_CHIP_SCREEN) { addCursorRect(bounds, cursor: ScreenView.noCursor); return }
         addCursorRect(bounds, cursor: AmigaPointer.current.cursor(scale: scale))
     }
+    static let noCursor = NSCursor(image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
