@@ -64,7 +64,7 @@ typedef struct WBWin {
 typedef struct Launch { uint32_t msg, seg; int nargs; struct Launch *next; } Launch;
 typedef struct AppObj { uint32_t handle; int kind; uint32_t id, userdata, win, port; char text[64]; uint32_t dobj; struct AppObj *next; } AppObj;
 typedef struct Req { int what; char name[600]; struct Req *next; } Req;
-enum { REQ_OPEN = 1, REQ_UPDATE, REQ_CLOSE, REQ_INFO, REQ_APPCHANGED };
+enum { REQ_OPEN = 1, REQ_UPDATE, REQ_CLOSE, REQ_INFO, REQ_APPCHANGED, REQ_RESET };
 
 enum { M_NONE, M_PENDING, M_DRAG, M_LASSO };
 
@@ -91,6 +91,10 @@ static struct {
 } wb;
 
 static void wb_message(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void open_desktop(void);
+static void build_menus(void);
+static void queue(int what, const char *name);
+static int selected_icons(WBWin *w, WIcon **out, int max);
 
 /* ---- paths ------------------------------------------------------------------------- */
 
@@ -557,7 +561,8 @@ static int launch(const char *tool, const char *project) {
     Arena A = { 0 };
     uint32_t tags = ar_tags(&A, 0x800003E9u /* NP_Seglist */, seg, 0x800003EAu /* NP_FreeSeglist */, 0,
                             0x800003F4u /* NP_Name */, ar_text(&A, base_name(tool)), 0x800003F3u /* NP_StackSize */, stack,
-                            0x800003F2u /* NP_CurrentDir */, dos_lock(tdir), 0x800003FAu /* NP_Cli */, 0, 0);
+                            0x800003F2u /* NP_CurrentDir */, dos_lock(tdir), 0x800003F8u /* NP_HomeDir */, dos_lock(tdir),
+                            0x800003FAu /* NP_Cli */, 0, 0);
     uint32_t msg = exec_allocmem(WBStartup_SIZEOF + 8 * 2 + 2 * 256, MEMF_PUBLIC | MEMF_CLEAR);
     uint32_t args = msg + WBStartup_SIZEOF, names = args + 16;
     wr8(msg + LN_TYPE, NT_MESSAGE);
@@ -699,13 +704,64 @@ static int appmsg_returned(uint32_t m) {
     return 0;
 }
 
+/* ---- extracting archives with C:LhA ------------------------------------------------------- */
+
+typedef struct { char cmd[1400]; char dir[600]; char title[200]; } Extract;
+
+/* a CLI process: LhA in a console window, then the drawer shows what came out */
+static void extract_body(void *arg) {
+    Extract *x = arg;
+    uint32_t in, out, pr = this_task();
+    char spec[300];
+    snprintf(spec, sizeof spec, "40/30/560/150/%s/AUTO/CLOSE/WAIT", x->title);
+    if (dos_open_console(&sched_current()->cpu, spec, &in, &out)) {
+        wr32(pr + PR_CIS, in);
+        wr32(pr + PR_COS, out);
+        int rc = shell_execute(x->cmd);
+        queue(REQ_UPDATE, x->dir);
+        const char *end = rc == 0 ? "\nExtraction termin\xe9" "e. Fermez cette fen\xeatre.\n"
+                                  : "\nL'extraction a \xe9" "chou\xe9" ". Fermez cette fen\xeatre.\n";
+        dos_write_handle(out, end, (int)strlen(end));
+        dos_close_handle(in);
+        dos_close_handle(out);
+        wr32(pr + PR_CIS, 0);
+        wr32(pr + PR_COS, 0);
+    }
+    free(x);
+}
+
+static void do_extract(WBWin *w) {
+    WIcon *sel[64];
+    int n = selected_icons(w, sel, 64), done = 0;
+    char hp[1024];
+    struct stat st;
+    if (!host_of("C:LhA", hp, sizeof hp) || stat(hp, &st)) { wb_message("LhA n'est pas install\xc3\xa9 dans C:."); return; }
+    for (int i = 0; i < n; i++) {
+        const char *name = sel[i]->name, *dot = strrchr(name, '.');
+        if (!dot || (strcasecmp(dot, ".lha") && strcasecmp(dot, ".lzh"))) continue;
+        char dir[600], dest[700], cmd[1400];
+        if (!parent_path(sel[i]->path, dir, sizeof dir)) snprintf(dir, sizeof dir, "%s", w->path);
+        snprintf(dest, sizeof dest, "%.*s", (int)(strlen(sel[i]->path) - strlen(dot)), sel[i]->path);
+        snprintf(cmd, sizeof cmd, "C:LhA -a x \"%s\" \"%s/\"", sel[i]->path, dest);
+        Extract *x = calloc(1, sizeof *x);
+        to_latin1(cmd, x->cmd, sizeof x->cmd);
+        snprintf(x->dir, sizeof x->dir, "%s", dir);
+        char t[200];
+        snprintf(t, sizeof t, "Extraction de %s", name);
+        to_latin1(t, x->title, sizeof x->title);
+        dos_create_cli("Extraction LhA", extract_body, x);
+        done++;
+    }
+    if (!done) wb_message("S\xc3\xa9lectionnez une archive .lha ou .lzh,\npuis choisissez Extraire l'archive.");
+}
+
 /* ---- menus ----------------------------------------------------------------------------- */
 
 enum {
     A_EXECUTE = 1, A_REDRAWALL, A_UPDATEALL, A_LASTMSG, A_ABOUT, A_QUIT,
     A_NEWDRAWER, A_PARENT, A_CLOSE, A_UPDATE, A_SELECTALL, A_CLEANUP, A_SHOWICONS, A_SHOWALL, A_BYICON, A_BYNAME,
     A_OPEN, A_COPY, A_RENAME, A_INFO, A_SNAPSHOT, A_DELETE,
-    A_RUNPROGRAM, A_RESET, A_APPMENU = 1000
+    A_RUNPROGRAM, A_RESET, A_NEWSHELL, A_EXTRACT, A_APPMENU = 1000
 };
 
 typedef struct { int type; const char *label, *key; int flags, excl, action; } MDef;
@@ -744,6 +800,8 @@ static void build_menus(void) {
         { 2, "Supprimer...", "D", 0, 0, A_DELETE },
         { 1, "Outils", 0, 0, 0, 0 },
         { 2, "Lancer un programme...", "L", 0, 0, A_RUNPROGRAM },
+        { 2, "Nouveau Shell", "W", 0, 0, A_NEWSHELL },
+        { 2, "Extraire l'archive (LhA)", "X", 0, 0, A_EXTRACT },
         { 2, "Réinitialiser le Workbench", 0, 0, 0, A_RESET },
     };
     int n = (int)(sizeof defs / sizeof *defs), napp = 0;
@@ -1029,6 +1087,8 @@ static void menu_action(WBWin *w, int act) {
     case A_SNAPSHOT: if (w) do_snapshot(w); break;
     case A_DELETE: if (w && !w->backdrop) do_delete(w); break;
     case A_RUNPROGRAM: run_program(); break;
+    case A_NEWSHELL: shell_run_background("NEWSHELL"); break;
+    case A_EXTRACT: if (w) do_extract(w); break;
     case A_RESET: {
         while (wb.wins) detach_close(wb.wins);
         open_desktop();
@@ -1266,6 +1326,32 @@ static void mouse_move(WBWin *w, NMsg *m) {
 
 /* ---- the event loop ------------------------------------------------------------------------ */
 
+/* new ScreenMode preferences: close our windows, reopen the screen in the new
+   mode, then the desktop and the drawers that were open (what IPrefs does) */
+extern int intuition_reopen_workbench(void);
+static void reset_screen(void) {
+    char paths[16][600];
+    int n = 0;
+    for (WBWin *w = wb.wins; w; w = w->next)
+        if (!w->backdrop && n < 16) snprintf(paths[n++], sizeof paths[0], "%s", w->path);
+    while (wb.wins) detach_close(wb.wins);
+    if (wb.menus) lib_call(wb.c, GadToolsBase, "gadtools", "FreeMenus", wb.menus);
+    wb.menus = 0;
+    lib_call(wb.c, GadToolsBase, "gadtools", "FreeVisualInfo", wb.vi);
+    int ok = intuition_reopen_workbench();
+    wb.s = workbench_screen(1);
+    wb.vi = lib_call(wb.c, GadToolsBase, "gadtools", "GetVisualInfoA", wb.s->scr, 0);
+    build_menus();
+    open_desktop();
+    for (int i = n - 1; i >= 0; i--) open_drawer(paths[i], 0);
+    if (!ok)
+        wb_message("Le Workbench ne peut pas changer de mode :\n"
+                   "des fenêtres d'autres programmes sont encore ouvertes.\n"
+                   "Fermez-les, puis choisissez de nouveau le mode.");
+}
+
+void workbench_reset_screen(void) { queue(REQ_RESET, 0); }
+
 static void handle_requests(void) {
     while (wb.reqs) {
         Req *r = wb.reqs;
@@ -1298,6 +1384,7 @@ static void handle_requests(void) {
             if (tmp.dobj) { do_info(&tmp); icon_free(tmp.dobj); }
             break;
         }
+        case REQ_RESET: reset_screen(); break;
         case REQ_APPCHANGED:
             rebuild_menus();
             for (WBWin *w = wb.wins; w; w = w->next) if (w->backdrop) { read_drawer(w); relayout(w); }

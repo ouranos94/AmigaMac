@@ -6,6 +6,7 @@
  */
 #include "os.h"
 #include "wb.h"
+#include "console.h"
 #include "sched.h"
 #include <ctype.h>
 #include <stdarg.h>
@@ -19,6 +20,49 @@
 static char prompt_fmt[128] = "%N.%S> ";
 static char prompt_buf[1200];
 static int last_rc, last_err;
+
+/* local variables (SET) and the command path (PATH), per AmigaMac session */
+typedef struct { char name[64], value[256]; } LVar;
+static LVar lvars[64];
+static int nlvars;
+static char cmd_path[16][256];
+static int ncmd_path;
+
+static const char *lvar_get(const char *n) {
+    for (int i = 0; i < nlvars; i++) if (!strcasecmp(lvars[i].name, n)) return lvars[i].value;
+    return 0;
+}
+
+/* $name and ${name}: local variables, RC, Result2, then ENV: */
+static void expand_vars(const char *in, char *out, int max) {
+    int k = 0;
+    for (const char *p = in; *p && k < max - 1;) {
+        if (*p == '*' && p[1] == '$') { out[k++] = '$'; p += 2; continue; }   /* escaped */
+        if (*p != '$' || !(isalpha((unsigned char)p[1]) || p[1] == '{' || p[1] == '_')) { out[k++] = *p++; continue; }
+        p++;
+        int brace = *p == '{';
+        if (brace) p++;
+        char name[64];
+        int n = 0;
+        while ((isalnum((unsigned char)*p) || *p == '_' || *p == '.') && n < 63) name[n++] = *p++;
+        name[n] = 0;
+        if (brace && *p == '}') p++;
+        char val[256] = "";
+        const char *l = lvar_get(name);
+        if (l) snprintf(val, sizeof val, "%s", l);
+        else if (!strcasecmp(name, "RC")) snprintf(val, sizeof val, "%d", last_rc);
+        else if (!strcasecmp(name, "Result2")) snprintf(val, sizeof val, "%d", last_err);
+        else {
+            char ap[128], hp[1024];
+            snprintf(ap, sizeof ap, "ENV:%s", name);
+            FILE *f = dos_resolve(ap, hp, sizeof hp) ? fopen(hp, "rb") : 0;
+            if (f) { size_t r = fread(val, 1, sizeof val - 1, f); val[r] = 0; fclose(f); val[strcspn(val, "\n")] = 0; }
+            else snprintf(val, sizeof val, "$%s", name);
+        }
+        for (const char *v = val; *v && k < max - 1; v++) out[k++] = *v;
+    }
+    out[k] = 0;
+}
 
 static void out(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void out(const char *fmt, ...) {
@@ -134,8 +178,15 @@ static int cmp_entry(const void *a, const void *b) {
     return strcasecmp(x->name, y->name);
 }
 
-static int list_dir(const char *apath, Entry **res) {
-    char hp[1024];
+static int list_dir(const char *apath_in, Entry **res) {
+    char hp[1024], apath[512], pat[256] = "";
+    snprintf(apath, sizeof apath, "%s", apath_in);
+    char *last = strrchr(apath, '/') ? strrchr(apath, '/') + 1 : strchr(apath, ':') ? strchr(apath, ':') + 1 : apath;
+    if (dos_has_wild(last)) {                                    /* DIR RAM:#?.txt */
+        snprintf(pat, sizeof pat, "%s", last);
+        *last = 0;
+        if (last > apath && last[-1] == '/') last[-1] = 0;
+    }
     if (!dos_resolve(apath, hp, sizeof hp)) return -1;
     DIR *d = opendir(hp);
     if (!d) return -1;
@@ -144,6 +195,11 @@ static int list_dir(const char *apath, Entry **res) {
     struct dirent *de;
     while ((de = readdir(d))) {
         if (de->d_name[0] == '.') continue;
+        if (pat[0]) {
+            char l1[256];
+            dos_name_to_amiga(de->d_name, l1, sizeof l1);
+            if (!dos_match_pattern(pat, l1, 1)) continue;
+        }
         if (n == cap) { cap *= 2; e = realloc(e, sizeof *e * cap); }
         char p[2048];
         struct stat st;
@@ -184,7 +240,18 @@ static int c_list(int argc, char argv[][512], const char *rest) {
     const char *path = argc > 1 ? argv[1] : "";
     Entry *e;
     int n = list_dir(path, &e);
-    if (n < 0) { out("Can't examine \"%s\": object not found\n", path); return 20; }
+    if (n < 0) {
+        char hp[1024];
+        struct stat st;
+        if (!dos_resolve(path, hp, sizeof hp) || stat(hp, &st)) { out("Can't examine \"%s\": object not found\n", path); return 20; }
+        e = malloc(sizeof *e);                                  /* a single file */
+        const char *b = strrchr(path, '/') ? strrchr(path, '/') + 1 : strchr(path, ':') ? strchr(path, ':') + 1 : path;
+        snprintf(e[0].name, sizeof e[0].name, "%s", b);
+        e[0].dir = 0;
+        e[0].size = (long)st.st_size;
+        e[0].mtime = st.st_mtime;
+        n = 1;
+    }
     int files = 0, dirs = 0;
     long blocks = 0;
     for (int i = 0; i < n; i++) {
@@ -356,6 +423,53 @@ static int c_setenv(int argc, char argv[][512], const char *rest) {
     return 0;
 }
 
+static int c_path(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    int add = 0, reset = 0, rem = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcasecmp(argv[i], "ADD")) add = 1;
+        else if (!strcasecmp(argv[i], "RESET")) reset = 1;
+        else if (!strcasecmp(argv[i], "REMOVE")) rem = 1;
+    }
+    if (reset) ncmd_path = 0;
+    if (argc == 1 || (argc == 2 && (add || reset) && !reset)) {
+        out("Répertoire courant\n");
+        for (int i = 0; i < ncmd_path; i++) out("%s\n", cmd_path[i]);
+        out("C:\n");
+        return 0;
+    }
+    for (int i = 1; i < argc; i++) {
+        if (!strcasecmp(argv[i], "ADD") || !strcasecmp(argv[i], "RESET") || !strcasecmp(argv[i], "REMOVE") || !strcasecmp(argv[i], "QUIET")) continue;
+        if (rem) {
+            for (int k = 0; k < ncmd_path; k++)
+                if (!strcasecmp(cmd_path[k], argv[i])) { memmove(cmd_path[k], cmd_path[k + 1], sizeof cmd_path[0] * (size_t)(ncmd_path - k - 1)); ncmd_path--; break; }
+            continue;
+        }
+        uint32_t l = dos_lock(argv[i]);
+        if (!l) { out("PATH: %s introuvable\n", argv[i]); continue; }
+        dos_unlock(l);
+        if (ncmd_path < 16) snprintf(cmd_path[ncmd_path++], sizeof cmd_path[0], "%s", argv[i]);
+    }
+    return 0;
+}
+
+static int c_set(int argc, char argv[][512], const char *rest) {
+    if (argc < 2) { for (int i = 0; i < nlvars; i++) out("%-16s %s\n", lvars[i].name, lvars[i].value); return 0; }
+    const char *val = rest + strlen(argv[1]);
+    while (*val == ' ') val++;
+    for (int i = 0; i < nlvars; i++)
+        if (!strcasecmp(lvars[i].name, argv[1])) { snprintf(lvars[i].value, sizeof lvars[i].value, "%s", val); return 0; }
+    if (nlvars < 64) { snprintf(lvars[nlvars].name, 64, "%s", argv[1]); snprintf(lvars[nlvars].value, 256, "%s", val); nlvars++; }
+    return 0;
+}
+
+static int c_unset(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    for (int i = 0; argc > 1 && i < nlvars; i++)
+        if (!strcasecmp(lvars[i].name, argv[1])) { lvars[i] = lvars[--nlvars]; break; }
+    return 0;
+}
+
 static int c_getenv(int argc, char argv[][512], const char *rest) {
     (void)rest;
     if (argc < 2) return 20;
@@ -371,24 +485,300 @@ static int c_getenv(int argc, char argv[][512], const char *rest) {
     return 0;
 }
 
+static const char *builtin_name(const char *name);
+/* ---- scripts: EXECUTE with .KEY arguments and IF/ELSE/ENDIF, SKIP/LAB, QUIT, FAILAT ---- */
+
+typedef struct { char name[32]; char val[512]; int sw, kw, multi; } KeyArg;
+
+/* bind the arguments of a script to its .KEY template */
+static int bind_keys(const char *tpl, int argc, char argv[][512], KeyArg *k, int max) {
+    int n = 0;
+    char t[512];
+    snprintf(t, sizeof t, "%s", tpl);
+    for (char *p = strtok(t, ","); p && n < max; p = strtok(0, ",")) {
+        while (*p == ' ') p++;
+        memset(&k[n], 0, sizeof k[n]);
+        char *sl = strchr(p, '/');
+        snprintf(k[n].name, sizeof k[n].name, "%.*s", sl ? (int)(sl - p) : (int)strlen(p), p);
+        char *eq = strchr(k[n].name, '=');                 /* aliases: keep the first name */
+        if (eq) *eq = 0;
+        for (char *f = sl; f && *f; f++) {
+            char m = (char)toupper((unsigned char)f[1]);
+            if (*f == '/') { if (m == 'S') k[n].sw = 1; else if (m == 'K') k[n].kw = 1; else if (m == 'M') k[n].multi = 1; }
+        }
+        n++;
+    }
+    int used[64] = { 0 };
+    for (int i = 0; i < argc && i < 64; i++) {
+        for (int j = 0; j < n; j++) {
+            size_t l = strlen(k[j].name);
+            if (strncasecmp(argv[i], k[j].name, l) || (argv[i][l] && argv[i][l] != '=')) continue;
+            used[i] = 1;
+            if (k[j].sw) snprintf(k[j].val, sizeof k[j].val, "%s", k[j].name);
+            else if (argv[i][l] == '=') snprintf(k[j].val, sizeof k[j].val, "%s", argv[i] + l + 1);
+            else if (i + 1 < argc) { snprintf(k[j].val, sizeof k[j].val, "%s", argv[i + 1]); used[++i] = 1; }
+            k[j].kw = 2;                                     /* filled */
+            break;
+        }
+    }
+    int j = 0;
+    for (int i = 0; i < argc && i < 64; i++) {
+        if (used[i]) continue;
+        while (j < n && (k[j].sw || k[j].kw)) j++;
+        if (j >= n) return 0;
+        if (k[j].multi) {
+            size_t l = strlen(k[j].val);
+            snprintf(k[j].val + l, sizeof k[j].val - l, "%s%s", l ? " " : "", argv[i]);
+            continue;
+        }
+        snprintf(k[j].val, sizeof k[j].val, "%s", argv[i]);
+        j++;
+    }
+    return n;
+}
+
+/* <name> and <name$default> */
+static void subst_keys(const char *in, char *outp, int max, KeyArg *k, int nk, char bra, char ket, char dollar,
+                       char defs[][2][256], int ndefs) {
+    int o = 0;
+    for (const char *p = in; *p && o < max - 1;) {
+        const char *e = *p == bra ? strchr(p + 1, ket) : 0;
+        if (!e) { outp[o++] = *p++; continue; }
+        char name[256], def[256] = "";
+        snprintf(name, sizeof name, "%.*s", (int)(e - p - 1), p + 1);
+        char *d = strchr(name, dollar);
+        if (d) { snprintf(def, sizeof def, "%s", d + 1); *d = 0; }
+        int found = 0;
+        for (int i = 0; i < nk; i++)
+            if (!strcasecmp(k[i].name, name)) {
+                found = 1;
+                const char *v = k[i].val;
+                if (!*v) {
+                    v = def;
+                    for (int q = 0; !*v && q < ndefs; q++) if (!strcasecmp(defs[q][0], name)) v = defs[q][1];
+                }
+                for (; *v && o < max - 1; v++) outp[o++] = *v;
+            }
+        if (!found) { outp[o++] = *p++; continue; }
+        p = e + 1;
+    }
+    outp[o] = 0;
+}
+
+static int script_cond(int argc, char argv[][512], int rc) {
+    int i = 1, not = 0, val = 0;
+    if (i < argc && !strcasecmp(argv[i], "NOT")) { not = 1; i++; }
+    int r = 0;
+    if (i < argc && !strcasecmp(argv[i], "WARN")) r = rc >= 5;
+    else if (i < argc && !strcasecmp(argv[i], "ERROR")) r = rc >= 10;
+    else if (i < argc && !strcasecmp(argv[i], "FAIL")) r = rc >= 20;
+    else if (i < argc && !strcasecmp(argv[i], "EXISTS")) {
+        char hp[1024];
+        struct stat st;
+        r = i + 1 < argc && dos_resolve(argv[i + 1], hp, sizeof hp) && !stat(hp, &st);
+    } else {
+        if (i < argc && !strcasecmp(argv[i], "VAL")) { val = 1; i++; }
+        if (i + 2 < argc && !strcasecmp(argv[i + 2], "VAL")) val = 1;
+        const char *a = i < argc ? argv[i] : "", *op = i + 1 < argc ? argv[i + 1] : "", *b = i + 2 < argc ? argv[i + 2] : "";
+        if (!strcasecmp(b, "VAL")) b = i + 3 < argc ? argv[i + 3] : "";
+        long cmp = val ? (atol(a) > atol(b)) - (atol(a) < atol(b)) : strcasecmp(a, b);
+        if (!strcasecmp(op, "EQ")) r = cmp == 0;
+        else if (!strcasecmp(op, "GT")) r = cmp > 0;
+        else if (!strcasecmp(op, "GE")) r = cmp >= 0;
+        else if (!strcasecmp(op, "LT")) r = cmp < 0;
+        else if (!strcasecmp(op, "LE")) r = cmp <= 0;
+    }
+    return not ? !r : r;
+}
+
+int shell_run_script(const char *hp, int argc, char argv[][512]) {
+    FILE *f = fopen(hp, "r");
+    if (!f) return -1;
+    int cap = 256, n = 0;
+    char **lines = malloc(sizeof *lines * cap);
+    char buf[2048];
+    while (fgets(buf, sizeof buf, f)) {
+        buf[strcspn(buf, "\r\n")] = 0;
+        if (n == cap) { cap *= 2; lines = realloc(lines, sizeof *lines * cap); }
+        lines[n++] = strdup(buf);
+    }
+    fclose(f);
+    KeyArg *keys = calloc(32, sizeof *keys);
+    char (*defs)[2][256] = calloc(16, sizeof *defs);
+    int nk = 0, ndefs = 0, failat = 10, rc = 0, last = 0;
+    char bra = '<', ket = '>', dollar = '$';
+    for (int i = 0; i < n; i++) {                            /* directives */
+        const char *l = lines[i];
+        if (l[0] != '.') continue;
+        char d[16];
+        sscanf(l + 1, "%15s", d);
+        const char *v = l + 1 + strlen(d);
+        while (*v == ' ' || *v == '\t') v++;
+        if (!strcasecmp(d, "KEY") || !strcasecmp(d, "K")) nk = bind_keys(v, argc, argv, keys, 32);
+        else if (!strcasecmp(d, "BRA")) bra = *v;
+        else if (!strcasecmp(d, "KET")) ket = *v;
+        else if (!strcasecmp(d, "DOLLAR") || !strcasecmp(d, "DOL")) dollar = *v;
+        else if ((!strcasecmp(d, "DEF") || !strcasecmp(d, "DEFAULT")) && ndefs < 16) {
+            sscanf(v, "%255s", defs[ndefs][0]);
+            const char *w = v + strlen(defs[ndefs][0]);
+            while (*w == ' ') w++;
+            char tk[1][512];
+            snprintf(defs[ndefs][1], 256, "%s", tokenize(w, tk, 1) ? tk[0] : "");
+            ndefs++;
+        }
+    }
+    int stack[32], sp = 0, active = 1;                      /* IF nesting */
+    char (*tok)[512] = malloc(16 * 512);
+    for (int pc = 0; pc < n; pc++) {
+        char line[2048], exp[2048];
+        if (lines[pc][0] == '.') continue;
+        subst_keys(lines[pc], line, sizeof line, keys, nk, bra, ket, dollar, defs, ndefs);
+        expand_vars(line, exp, sizeof exp);
+        int nt = tokenize(exp, tok, 16);
+        if (!nt) continue;
+        const char *w = tok[0];
+        if (!strcasecmp(w, "IF")) {
+            if (sp < 32) stack[sp++] = active;
+            active = active && script_cond(nt, tok, last);
+            continue;
+        }
+        if (!strcasecmp(w, "ELSE")) { if (sp && stack[sp - 1]) active = !active; continue; }
+        if (!strcasecmp(w, "ENDIF")) { if (sp) active = stack[--sp]; continue; }
+        if (!active) continue;
+        if (!strcasecmp(w, "LAB")) continue;
+        if (!strcasecmp(w, "QUIT")) { rc = nt > 1 ? atoi(tok[1]) : 0; break; }
+        if (!strcasecmp(w, "FAILAT")) { if (nt > 1) failat = atoi(tok[1]); else out("Fail limit: %d\n", failat); continue; }
+        if (!strcasecmp(w, "SKIP")) {
+            int back = nt > 2 && !strcasecmp(tok[2], "BACK"), target = -1;
+            for (int j = back ? 0 : pc + 1; j < n && target < 0; j++) {
+                char lt[2][512];
+                if (tokenize(lines[j], lt, 2) >= 1 && !strcasecmp(lt[0], "LAB") &&
+                    (nt < 2 || !strcasecmp(nt > 1 ? tok[1] : "", tokenize(lines[j], lt, 2) > 1 ? lt[1] : ""))) target = j;
+            }
+            if (target < 0) { out("SKIP: label %s not found\n", nt > 1 ? tok[1] : ""); rc = 10; break; }
+            pc = target;
+            sp = 0;
+            active = 1;
+            continue;
+        }
+        last = shell_execute(line);
+        if (last == -2) { last = 0; break; }
+        if (last < 0) last = 0;
+        last_rc = last;
+        rc = last;
+        if (last >= failat) break;
+    }
+    free(tok);
+    for (int i = 0; i < n; i++) free(lines[i]);
+    free(lines);
+    free(keys);
+    free(defs);
+    return rc;
+}
+
+/* a script with the S bit, run by its name */
+int shell_run_script_args(const char *hp, const char *args) {
+    char (*tok)[512] = malloc(64 * 512);
+    int n = tokenize(args ? args : "", tok, 64);
+    int rc = shell_run_script(hp, n, tok);
+    free(tok);
+    return rc;
+}
+
 static int c_execute(int argc, char argv[][512], const char *rest) {
     (void)rest;
     if (argc < 2) { out("EXECUTE: required argument missing\n"); return 20; }
     char hp[1024];
-    if (!dos_resolve(argv[1], hp, sizeof hp)) return 20;
-    FILE *f = fopen(hp, "r");
-    if (!f) { out("Can't open %s\n", argv[1]); return 20; }
-    char line[2048];
-    int rc = 0;
-    while (fgets(line, sizeof line, f)) {
-        line[strcspn(line, "\r\n")] = 0;
-        if (line[0] == '.') continue;                    /* script directives (.KEY ...) */
-        rc = shell_execute(line);
-        if (rc == -2) break;
-        if (rc >= 20) break;                             /* default FAILAT */
+    if (!dos_resolve(argv[1], hp, sizeof hp)) { out("Can't open %s\n", argv[1]); return 20; }
+    int rc = shell_run_script(hp, argc - 2, argv + 2);
+    if (rc < 0) { out("Can't open %s\n", argv[1]); return 20; }
+    return rc;
+}
+
+/* control words outside a script */
+static int c_scriptonly(int argc, char argv[][512], const char *rest) {
+    (void)argc; (void)rest;
+    if (!strcasecmp(argv[0], "LAB") || !strcasecmp(argv[0], "ENDIF") || !strcasecmp(argv[0], "ELSE")) return 0;
+    if (!strcasecmp(argv[0], "QUIT")) return argc > 1 ? atoi(argv[1]) : 0;
+    out("%s: only valid in a script\n", argv[0]);
+    return 10;
+}
+static int c_if(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    return script_cond(argc, argv, last_rc) ? 0 : 5;
+}
+
+/* ASK prompt: WARN (5) for yes */
+static int c_ask(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    for (;;) {
+        out("%s ", argc > 1 ? argv[1] : "");
+        uint32_t in = rd32(this_task() + PR_CIS);
+        char line[256];
+        if (dos_read_line(in, line, sizeof line) < 0) return 0;
+        char ch = (char)toupper((unsigned char)line[0]);
+        if (ch == 'Y' || ch == 'O') return 5;
+        if (ch == 'N' || ch == 0) return 0;
     }
-    fclose(f);
-    return rc < 0 ? 0 : rc;
+}
+
+/* WHICH command: where it would be found; WARN when nowhere */
+static int c_which(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    if (argc < 2) return 10;
+    if (builtin_name(argv[1])) { out("INTERNAL %s\n", builtin_name(argv[1])); return 0; }
+    char cand[20][300];
+    int nc = 0;
+    snprintf(cand[nc++], 300, "%s", argv[1]);
+    if (!strchr(argv[1], ':') && !strchr(argv[1], '/')) {
+        for (int k = 0; k < ncmd_path && nc < 19; k++) {
+            size_t l = strlen(cmd_path[k]);
+            snprintf(cand[nc++], 300, "%s%s%s", cmd_path[k], l && (cmd_path[k][l - 1] == ':' || cmd_path[k][l - 1] == '/') ? "" : "/", argv[1]);
+        }
+        snprintf(cand[nc++], 300, "C:%s", argv[1]);
+    }
+    for (int i = 0; i < nc; i++) {
+        char hp[1024];
+        struct stat st;
+        if (dos_resolve(cand[i], hp, sizeof hp) && !stat(hp, &st) && !S_ISDIR(st.st_mode)) {
+            char an[1024];
+            dos_amiga_name(hp, an, sizeof an);
+            out("%s\n", an);
+            return 0;
+        }
+    }
+    return 5;
+}
+
+/* PROTECT file [+|-]flags (HSPARWED) */
+static int c_protect(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    if (argc < 2) { out("PROTECT: required argument missing\n"); return 20; }
+    uint32_t l = dos_lock(argv[1]);
+    if (!l) { out("%s: object not found\n", argv[1]); return 20; }
+    const char *hp = dos_lock_host_path(l);
+    uint32_t prot = dos_protection(hp);
+    static const char bits[] = "HSPARWED";                 /* bit 7 .. bit 0 */
+    if (argc > 2) {
+        const char *f = argv[2];
+        int mode = *f == '+' ? 1 : *f == '-' ? -1 : 0;
+        if (mode) f++;
+        /* RWED are "forbidden" when set: the flags name what is allowed */
+        uint32_t named = 0;
+        for (; *f; f++) { const char *b = strchr(bits, toupper((unsigned char)*f)); if (b) named |= 1u << (7 - (b - bits)); }
+        uint32_t allow = (prot ^ 0x0F) & 0xFF;
+        if (mode > 0) allow |= named; else if (mode < 0) allow &= ~named; else allow = named;
+        prot = (prot & ~0xFFu) | ((allow ^ 0x0F) & 0xFF);
+        dos_set_protection(hp, prot);
+    } else {
+        char s[9];
+        uint32_t allow = (prot ^ 0x0F) & 0xFF;
+        for (int i = 0; i < 8; i++) s[i] = allow & (1u << (7 - i)) ? (char)tolower(bits[i]) : '-';
+        s[8] = 0;
+        out("%s\n", s);
+    }
+    dos_unlock(l);
+    return 0;
 }
 
 static int c_endcli(int argc, char argv[][512], const char *rest) { (void)argc; (void)argv; (void)rest; return -2; }
@@ -413,7 +803,7 @@ static int c_wait(int argc, char argv[][512], const char *rest) {
    INPUT KEY text | RAW code | MS n (pause in milliseconds) */
 static int c_input(int argc, char argv[][512], const char *rest) {
     (void)rest;
-    if (argc < 2) { out("INPUT MOVE|CLICK|DOWN|UP|RCLICK|RDOWN|RUP x y, KEY texte, RAW code\n"); return 20; }
+    if (argc < 2) { out("INPUT MOVE|CLICK|DOWN|UP|RCLICK|RDOWN|RUP x y, KEY texte, RAW code, CLOSE\n"); return 20; }
     int id = intui_active_screen_id();
     int x = argc > 2 ? atoi(argv[2]) : 0, y = argc > 3 ? atoi(argv[3]) : 0;
     InputEv e = { IEV_MOUSE, id, x, y, 0, 0, 0 };
@@ -421,10 +811,18 @@ static int c_input(int argc, char argv[][512], const char *rest) {
     if (!strcasecmp(op, "KEY")) {
         for (int i = 2; i < argc; i++)
             for (const char *p = argv[i]; *p || (i < argc - 1 && p == argv[i] + strlen(argv[i])); p++) {
-                InputEv k = { IEV_KEY, id, 0, 0, 0x40, 0, *p ? (uint8_t)*p : ' ' };
+                int ch = *p ? (uint8_t)*p : ' ', qual = 0, raw = keymap_raw_for(ch, &qual);
+                InputEv k = { IEV_KEY, id, 0, 0, raw, qual, ch };
                 amiga_input_event(&k);
+                InputEv u = { IEV_KEY, id, 0, 0, raw | 0x80, qual, 0 };
+                amiga_input_event(&u);
                 if (!*p) break;
             }
+        return 0;
+    }
+    if (!strcasecmp(op, "CLOSE")) {                          /* the Mac window's close box */
+        InputEv k = { IEV_CLOSE_SCREEN, id, 0, 0, 0, 0, 0 };
+        amiga_input_event(&k);
         return 0;
     }
     if (!strcasecmp(op, "RAW")) {
@@ -465,6 +863,9 @@ void shell_run_background(const char *line) {
     dos_create_cli("Background CLI", run_body, strdup(line));
     sched_preempt_point();
 }
+
+static void shell_body(void *arg);
+static int c_newshell(int argc, char argv[][512], const char *rest);
 
 static int c_loadwb(int argc, char argv[][512], const char *rest) {
     (void)argc; (void)argv; (void)rest;
@@ -516,6 +917,7 @@ static int c_break(int argc, char argv[][512], const char *rest) {
     out("BREAK: process %u does not exist\n", num);
     return 20;
 }
+
 static int c_help(int argc, char argv[][512], const char *rest);
 
 /* SNAPSHOT file: the active screen as composed for display, in PPM (testing aid) */
@@ -554,10 +956,24 @@ static const struct { const char *name; Builtin fn; const char *help; } builtins
     { "WHY", c_why, "explique la dernière erreur" },
     { "DATE", c_date, "date et heure" },
     { "SETENV", c_setenv, "variable d'environnement" },
+    { "SET", c_set, "variable locale du Shell" },
+    { "UNSET", c_unset, "supprime une variable locale" },
+    { "PATH", c_path, "chemin de recherche des commandes" },
     { "GETENV", c_getenv, "lit une variable" },
     { "EXECUTE", c_execute, "exécute un script" },
+    { "IF", c_if, "condition (dans un script)" },
+    { "ELSE", c_scriptonly, "condition (dans un script)" },
+    { "ENDIF", c_scriptonly, "condition (dans un script)" },
+    { "SKIP", c_scriptonly, "saut à un LAB (dans un script)" },
+    { "LAB", c_scriptonly, "étiquette (dans un script)" },
+    { "QUIT", c_scriptonly, "quitte un script" },
+    { "FAILAT", c_scriptonly, "seuil d'échec (dans un script)" },
+    { "ASK", c_ask, "pose une question oui/non" },
+    { "WHICH", c_which, "trouve une commande" },
+    { "PROTECT", c_protect, "bits de protection" },
     { "RUN", c_run, "lance une commande en arrière-plan" },
     { "LOADWB", c_loadwb, "démarre le Workbench" },
+    { "NEWSHELL", c_newshell, "ouvre un Shell dans une fenêtre" },
     { "STATUS", c_status, "liste les processus et tâches" },
     { "BREAK", c_break, "envoie Ctrl-C/D/E/F à un processus" },
     { "WAIT", c_wait, "attend n secondes" },
@@ -567,6 +983,12 @@ static const struct { const char *name; Builtin fn; const char *help; } builtins
     { "ENDSHELL", c_endcli, "ferme le Shell" },
     { "HELP", c_help, "cette liste" },
 };
+
+static const char *builtin_name(const char *name) {
+    for (unsigned i = 0; i < sizeof builtins / sizeof *builtins; i++)
+        if (!strcasecmp(name, builtins[i].name)) return builtins[i].name;
+    return 0;
+}
 
 static int c_help(int argc, char argv[][512], const char *rest) {
     (void)argc; (void)argv; (void)rest;
@@ -581,17 +1003,66 @@ static int c_help(int argc, char argv[][512], const char *rest) {
 
 void shell_init(void) { last_rc = 0; last_err = 0; }
 
+static int shell_execute_tok(char *clean, char tok[][512], char argv[][512]);
+
+/* `command`: replaced by what the command prints, lines joined by spaces */
+static void expand_backquotes(const char *in, char *out, int max) {
+    int k = 0, quoted = 0;
+    for (const char *p = in; *p && k < max - 1;) {
+        if (*p == '"') quoted = !quoted;
+        if (*p == '*' && p[1] == '`') { out[k++] = '`'; p += 2; continue; }
+        const char *e = *p == '`' && !quoted ? strchr(p + 1, '`') : 0;
+        if (!e) { out[k++] = *p++; continue; }
+        char cmd[1024];
+        int n = (int)(e - p - 1) < (int)sizeof cmd - 1 ? (int)(e - p - 1) : (int)sizeof cmd - 1;
+        memcpy(cmd, p + 1, n);
+        cmd[n] = 0;
+        p = e + 1;
+        char tmp[64];
+        static int seq;
+        snprintf(tmp, sizeof tmp, "T:.bq%d", ++seq);
+        uint32_t fh = dos_open_host(tmp, 1);
+        if (!fh) continue;
+        uint32_t pr = this_task(), old = rd32(pr + PR_COS);
+        wr32(pr + PR_COS, fh);
+        shell_execute(cmd);
+        wr32(pr + PR_COS, old);
+        dos_close_handle(fh);
+        char hp[1024];
+        if (!dos_resolve(tmp, hp, sizeof hp)) continue;
+        FILE *f = fopen(hp, "rb");
+        int start = k;
+        if (f) {
+            int ch;
+            while ((ch = fgetc(f)) != EOF && k < max - 1) out[k++] = ch == '\n' ? ' ' : (char)ch;
+            fclose(f);
+        }
+        while (k > start && out[k - 1] == ' ') k--;
+        remove(hp);
+    }
+    out[k] = 0;
+}
+
 int shell_execute(const char *line) {
-    static char tok[64][512];
-    char clean[2048];
-    snprintf(clean, sizeof clean, "%s", line);
+    char (*tok)[512] = malloc(64 * 512);                     /* reentrant: SystemTagList may nest */
+    char (*argv)[512] = malloc(64 * 512);
+    char clean[2048], bq[2048];
+    expand_vars(line, bq, sizeof bq);
+    if (strchr(bq, '`')) expand_backquotes(bq, clean, sizeof clean);
+    else memcpy(clean, bq, sizeof clean);
+    int rc = shell_execute_tok(clean, tok, argv);
+    free(tok);
+    free(argv);
+    return rc;
+}
+
+static int shell_execute_tok(char *clean, char tok[][512], char argv[][512]) {
     /* redirections: >file, >>file, <file */
     uint32_t in_fh = 0, out_fh = 0;
     int ntok = tokenize(clean, tok, 64);
     if (!ntok) return 0;
     char args[2048] = "";
     int argc = 0;
-    static char argv[64][512];
     for (int i = 0; i < ntok; i++) {
         if (tok[i][0] == '>' && i > 0) {
             int append = tok[i][1] == '>';
@@ -623,6 +1094,11 @@ int shell_execute(const char *line) {
         if (strchr(argv[0], ':') || strchr(argv[0], '/')) rc = run_command(argv[0], args, &found);
         else {
             rc = run_command(argv[0], args, &found);
+            for (int k = 0; !found && k < ncmd_path; k++) {
+                size_t l = strlen(cmd_path[k]);
+                snprintf(path, sizeof path, "%s%s%s", cmd_path[k], l && (cmd_path[k][l - 1] == ':' || cmd_path[k][l - 1] == '/') ? "" : "/", argv[0]);
+                rc = run_command(path, args, &found);
+            }
             if (!found) { snprintf(path, sizeof path, "C:%s", argv[0]); rc = run_command(path, args, &found); }
         }
         if (!found) {
@@ -657,7 +1133,7 @@ int shell_execute(const char *line) {
 
 /* ---- the Shell as a native process ----------------------------------------- */
 
-typedef struct { char **cmds; int n; int interactive; } ShellBoot;
+typedef struct { char **cmds; int n; int interactive; int window; } ShellBoot;
 
 static void shell_body(void *arg) {
     ShellBoot *b = arg;
@@ -680,13 +1156,40 @@ static void shell_body(void *arg) {
             dos_write_handle(rd32(pr + PR_COS), p, (int)strlen(p));
             int n = dos_read_line(rd32(pr + PR_CIS), line, sizeof line);
             if (n < 0) break;
-            if (n == 0) continue;
+            if (n == 0) {                          /* end of file: Ctrl-\ or the close box */
+                if (b->window) { dos_write_handle(rd32(pr + PR_COS), "\n", 1); break; }
+                continue;
+            }
             line[strcspn(line, "\n")] = 0;
             rc = shell_execute(line);
             if (rc == -2) break;
         }
     }
+    if (b->window) {                               /* a NEWSHELL: its window goes with it */
+        dos_close_handle(rd32(pr + PR_CIS));
+        dos_close_handle(rd32(pr + PR_COS));
+        wr32(pr + PR_CIS, 0);
+        wr32(pr + PR_COS, 0);
+        return;
+    }
     if (host.shutdown) host.shutdown(rc < 0 ? 0 : rc);
+}
+
+static int c_newshell(int argc, char argv[][512], const char *rest) {
+    (void)argc; (void)argv;
+    const char *spec = *rest ? rest : "CON:0/12/640/160/AmigaShell/CLOSE";
+    if (!strncasecmp(spec, "CON:", 4)) spec += 4;
+    uint32_t in, outh;
+    if (!dos_open_console(&sched_current()->cpu, spec, &in, &outh)) { out("NEWSHELL: impossible d'ouvrir la fenêtre\n"); return 20; }
+    ShellBoot *b = calloc(1, sizeof *b);
+    b->interactive = 1;
+    b->window = 1;
+    uint32_t pr = dos_create_cli_io("Shell Process", shell_body, b, in, outh);
+    const char *hello = "AmigaMac Shell\n";
+    dos_write_handle(outh, hello, (int)strlen(hello));
+    (void)pr;
+    sched_preempt_point();
+    return 0;
 }
 
 void os_start(const char **commands, int ncommands, int interactive) {

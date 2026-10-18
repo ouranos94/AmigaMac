@@ -25,19 +25,52 @@ void mem_init(uint32_t size) {
     mem_size = size;
 }
 
-void mem_fault(uint32_t addr, int write, int size) {
+/* the hardware registers polled by programs that wait for a click or the beam */
+static int hw_read(uint32_t addr, int size, uint32_t *v) {
+    int b = input_buttons();
+    uint64_t t = now_us();
+    uint32_t line = (uint32_t)(t / 64 % 313);                /* PAL beam: 64 us per line */
+    uint32_t hpos = (uint32_t)(t % 64 * 227 / 64);
+    uint32_t r;
+    switch (addr & ~1u) {
+    case 0xBFE000: r = (b & 1) ? 0xBFBF : 0xFFFF; break;    /* CIA-A PRA: bit 6 = left button, low = pressed */
+    case 0xDFF016: r = (b & 2) ? 0xFBFF : 0xFFFF; break;    /* POTGOR: bit 10 = right button */
+    case 0xDFF004: r = (line >> 8) & 1; break;               /* VPOSR */
+    case 0xDFF006: r = (line & 0xFF) << 8 | (hpos & 0xFF); break;   /* VHPOSR */
+    case 0xDFF00A: case 0xDFF00C: case 0xDFF002: case 0xDFF01C: case 0xDFF01E: r = 0; break;
+    default: return 0;
+    }
+    if (size == 1) *v = (addr & 1) ? (r & 0xFF) : (r >> 8);
+    else if (size == 2) *v = r;
+    else { uint32_t lo = 0; hw_read(addr + 2, 2, &lo); *v = r << 16 | lo; }
+    return 1;
+}
+
+uint32_t mem_fault(uint32_t addr, int write, int size) {
     static uint32_t last = 0xFFFFFFFF;
     static int count;
-    if (addr == last && ++count > 3) return;
+    uint32_t v;
+    if (!write && hw_read(addr, size, &v)) return v;
+    if (addr == last && ++count > 3) return 0;
     if (addr != last) count = 0;
     last = addr;
     /* custom chips / CIAs: no hardware here, the OS is native */
     if ((addr >= 0xBFD000 && addr < 0xBFF000) || (addr >= 0xDFF000 && addr < 0xE00000))
         os_log("accès matériel ignoré : %s.%c $%06X (PC=$%06X)", write ? "écriture" : "lecture",
                size == 1 ? 'b' : size == 2 ? 'w' : 'l', addr, sched_current() ? sched_current()->cpu.insn_pc : 0);
-    else
+    else {
         os_log("accès mémoire hors limites : %s $%08X (PC=$%06X)", write ? "écriture" : "lecture",
                addr, sched_current() ? sched_current()->cpu.insn_pc : 0);
+        static int shown;
+        if (cpu68k_trace && !shown++ && sched_current()) {
+            M68K *c = &sched_current()->cpu;
+            char line[600];
+            int k = 0;
+            for (unsigned i = 0; i < 32; i++) k += snprintf(line + k, sizeof line - (size_t)k, " %06X", c->hist[(c->hidx + i) & 31]);
+            os_log("dernières instructions :%s", line);
+        }
+    }
+    return 0;
 }
 
 /* ---- heap: first-fit free list kept natively, 8-byte granularity -------- */
@@ -51,10 +84,17 @@ void heap_init(uint32_t start, uint32_t end) {
     start = (start + 7) & ~7u;
     freelist = malloc(sizeof(Block) * 64);
     capfree = 64;
+    /* two pieces, around the hardware range */
     freelist[0].addr = start;
-    freelist[0].size = end - start;
+    freelist[0].size = (end < HW_LO ? end : HW_LO) - start;
     nfree = 1;
-    heap_total = end - start;
+    heap_total = freelist[0].size;
+    if (end > HW_HI) {
+        freelist[1].addr = HW_HI;
+        freelist[1].size = end - HW_HI;
+        nfree = 2;
+        heap_total += freelist[1].size;
+    }
 }
 
 uint32_t heap_alloc(uint32_t size, uint32_t flags) {
@@ -170,7 +210,11 @@ void aline_handler(M68K *c, uint16_t op) {
         c->d[0] = 0;
         return;
     }
+    static int trace = -1;
+    if (trace < 0) { trace = getenv("AMIGAMAC_TRACE") != 0; cpu68k_trace = trace; }
+    if (trace) os_log("appel %s depuis $%06X (d0=%08X d1=%08X a0=%08X a1=%08X)", t->name, rd32(c->a[7]), c->d[0], c->d[1], c->a[0], c->a[1]);
     c->d[0] = t->fn(c);
+    if (trace) os_log("  -> %08X", c->d[0]);
     /* a Signal/PutMsg in that call may have woken a higher-priority task */
     if (sched_need_resched && !sched_forbidden()) sched_preempt_point();
 }

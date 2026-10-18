@@ -1,2 +1,5 @@
 ; AmigaMac Startup-Sequence
+IF EXISTS S:User-Startup
+  Execute S:User-Startup
+ENDIF
 LoadWB

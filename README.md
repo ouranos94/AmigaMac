@@ -123,6 +123,104 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
 - **utility.library** (étiquettes, hooks, dates, arithmétique 32/64 bits) et motifs
   AmigaDOS (`#?`, `(a|b)`, `~`, `[a-z]`) dans `ParsePattern`/`MatchPattern`.
 
+## Compatibilité (jalon 5)
+
+- **FPU 68881/68882** dans l'interpréteur : toutes les opérations arithmétiques et
+  transcendantes, formats entier/simple/double/étendu/décimal BCD, `FMOVEM`, `FBcc`,
+  `FScc`, `FDBcc`, `FTRAPcc`, registres de contrôle, modes d'arrondi, `FSAVE`/`FRESTORE`
+  (trame nulle). Les registres sont des doubles de l'hôte (53 bits de mantisse au lieu de 64).
+- **Bibliothèques mathématiques** : mathieeedoubbas/trans, mathieeesingbas/trans,
+  mathffp/mathtrans (format FFP de Motorola).
+- **Consoles** : fenêtres `CON:`/`RAW:` ouvertes par `Open()` (options CLOSE, WAIT,
+  NOSIZE…), séquences de contrôle de la console Amiga (CSI : curseur, effacement,
+  insertion, couleurs, rapport de taille), édition de ligne, Ctrl-C/D/E/F, `SetMode`,
+  `WaitForChar` ; console.device (lectures asynchrones, ConUnit) ; keymap.library
+  (`MapRawKey`, `MapANSI`) qui apprend la disposition réelle du clavier Mac.
+  `NEWSHELL` ouvre un Shell dans une fenêtre (aussi dans le menu Outils du Workbench).
+- **locale.library** : langue déduite des préférences macOS (français ou anglais
+  intégrés), vrais catalogues IFF CTLG dans `PROGDIR:Catalogs/` et `LOCALE:Catalogs/`,
+  `FormatString` (avec `%n$`), `FormatDate`, `ParseDate`, classes de caractères et
+  comparaisons Latin-1. `PROGDIR:` désigne le répertoire du programme en cours.
+- **diskfont.library** : vraies polices bitmap Amiga de `FONTS:` (`.font` + fichiers
+  hunk), `AvailFonts`, `NewFontContents`. Une police `amigamac.font` 16 points est
+  fournie (`tools/gendiskfont.py`).
+- **iffparse.library** (lecture et écriture, propriétés, collections, flux DOS ou hook),
+  **datatypes.library** (images ILBM dessinées dans les fenêtres, sons 8SVX joués),
+  **audio.device** et sortie son macOS (mélangeur 16 voix sur AudioQueue),
+  **clipboard.device** relié au presse-papiers du Mac (texte FTXT, unité 0),
+  **rexxsyslib.library** (messages et chaînes ARexx, sans interpréteur).
+- Divers : base de données des modes d'affichage (`GetDisplayInfoData`…), `BitMapScale`,
+  `StackSwap`, fenêtres `GIMMEZEROZERO`, piles superviseur, noms de fichiers Latin-1 ↔
+  UTF-8 (y compris les accents décomposés de macOS), glyphes Latin-1 manquants dessinés.
+- **dos.library complète** (hors fonctions privées) : `ExAll`, `MatchFirst`/`MatchNext`,
+  `ReadItem`/`FindArg`/`SplitName`, bits de protection et commentaires (gardés en
+  attributs étendus macOS), `SetFileDate`, `SetFileSize`, liens, liste DOS
+  (`LockDosList`/`NextDosEntry`…), assigns, `RunCommand`, `SystemTagList`, `Execute`,
+  paquets DOS (`DoPkt`, `SendPkt`…), `VFWritef` au format BCPL. `ReadArgs` rend à un
+  argument `/A` les derniers mots pris par un `/M` qui le précède, comme AmigaOS.
+- **Shell** : variables locales (`SET`, `$var`, `${var}`, `$RC`, ENV:), substitution
+  `` `commande` ``, `PATH`, motifs dans `DIR`/`LIST`, et des scripts complets :
+  `.KEY`/`.DEF`/`.BRA`/`.KET`, `IF`/`ELSE`/`ENDIF` (`EXISTS`, `WARN`, `EQ`, `GT`, `VAL`,
+  `NOT`…), `SKIP`/`LAB`, `QUIT`, `FAILAT`, `ASK`, `WHICH`, `PROTECT`. Un script portant
+  le bit S se lance par son nom.
+- **Résolution du Workbench** : le programme **Prefs/ScreenMode** (un vrai programme
+  68k GadTools, source dans `Prefs/screenmode.c`) liste la base des modes d'affichage
+  (PAL basse, haute et super-haute résolution, entrelacés ou non, et des modes
+  « AmigaMac: » à pixels carrés de 800x600 à 1920x1080, comme une carte graphique) et
+  le nombre de couleurs. « Utiliser » écrit `ENV:Sys/screenmode.prefs` (jusqu'au
+  prochain lancement), « Sauver » aussi `ENVARC:Sys/`. Le Workbench se rouvre aussitôt
+  dans le nouveau mode avec ses tiroirs, comme le fait IPrefs, sauf si d'autres
+  programmes ont encore des fenêtres sur l'écran. `SA_LikeWorkbench` suit ce mode.
+- **Pour Directory Opus** : `exec.Allocate`/`Deallocate` (régions mémoire privées),
+  `InitStruct` réaligné après un octet, une vraie `RootNode`/`DosInfo` dont la liste
+  DOS (triée) suit les assigns, **keyboard.device** (matrice des touches),
+  **input.device** avec la chaîne des gestionnaires d'entrée 68k (chaque événement les
+  traverse avant Intuition, `IND_WRITEEVENT`, `PeekQualifier`), requêtes à l'ancienne
+  `Request`/`EndRequest`, `SetABPenDrMd`, `InitGels`, `PubScreenStatus`.
+  `S:User-Startup` est exécuté au démarrage s'il existe (assigns des logiciels installés).
+- **Icône Shell** dans le tiroir `SYS:System`, à sa place sur AmigaOS : un double-clic
+  ouvre une fenêtre Shell (programme 68k `Programs/shell.c`, icône dessinée dans
+  `fonts/shell_icon.txt` et produite par `tools/mkinfo.py`).
+- **Extraire une archive depuis le Workbench** : sélectionner un fichier `.lha` ou `.lzh`,
+  puis *Outils → Extraire l'archive (LhA)* (Amiga-X) ; `C:LhA` l'extrait dans un tiroir du
+  même nom, sa progression dans une fenêtre console. LhA n'est pas livré avec AmigaMac :
+  il se télécharge sur Aminet (`util/arc/lha_68k.lha`). Les redirections du Shell
+  acceptent `>CON:…` et `>NIL:`.
+- **Registres matériels lus** : les programmes qui interrogent directement le CIA
+  (bouton gauche) ou `POTGOR` (bouton droit) et la position du faisceau obtiennent des
+  valeurs cohérentes ; la plage matérielle `$A00000-$FFFFFF` n'est plus de la RAM.
+
+### Logiciels Aminet essayés
+
+| Logiciel | Type | État |
+|---|---|---|
+| Compute 45.2 (misc/math) | calculatrice Shell, 3 variantes (IEEE double, simple, FFP) | fonctionne |
+| Calculator 1.3 (misc/math) | calculatrice GadTools, locale | fonctionne |
+| Boum 1.2 (game/wb) | démineur, datatypes (sons), fenêtre GZZ, mise à l'échelle | jouable |
+| BenchClock 1.60 (util/time) | horloge Workbench, timer.device | fonctionne |
+| MegaED 1.2 (text/edit) | éditeur multi-tâches, ARexx, presse-papiers | fonctionne (aide amigaguide/hothelp absente) |
+| Visage 39.22 (gfx/show) | visionneuse d'images (datatypes, paquets DOS) | fonctionne |
+| P-View (gfx/show) | visionneuse ILBM, lit le CIA directement | fonctionne |
+| ALook 3.1 (gfx/show) | visionneuse, charge sa propre iff.library depuis LIBS: | fonctionne |
+| Fifteen-Game 3 (game/think) | taquin GadTools | se lance et s'affiche (partie complète non testée) |
+| 4Wins (game/think) | puissance 4 | se lance et s'affiche (partie complète non testée) |
+| 521 (game/think) | jeu de réflexion | se lance et s'affiche (partie complète non testée) |
+| Amtris (game/think) | Tetris | demande powerpacker.library (tierce, non fournie) |
+| 0Filters 1.0 (util/cli) | 18 filtres Shell (Head, Tail, Uniq, WC, Tee, Strings, Encode…) | fonctionnent tous |
+| Directory Opus 4.12 (util/dopus) | gestionnaire de fichiers, sa propre dopus.library | fonctionne (listes, Makedir, visionneuse) ; disquettes absentes |
+| LhA 2.15 (util/arc) | archiveur, installé dans `C:LhA` | fonctionne (liste, extraction, dates conservées) |
+| 0Utils (util/cli) | 25 commandes Shell pour scripts (Open/ReadLn/WriteLn, SRun, Exists…) | fonctionnent, sauf `Window` (binaire défectueux dans l'archive) |
+
+Corrigé en chemin : pile superviseur des tâches, `CreateMsgPort` qui laisse le port
+dans A0 comme la ROM, un nouveau processus qui démarre avant que son parent continue
+(comme sur une vraie machine, où la tranche de temps du parent s'écoule), bitmaps de
+fenêtres qui ne changent plus d'adresse au redimensionnement.
+
+Outils de mise au point : `AMIGAMAC_TRACE=1` journalise chaque appel système (arguments,
+résultat), les adresses de chargement des hunks et les 32 dernières instructions avant
+une faute ; `AMIGAMAC_MUTE=1` coupe le son (par défaut dans `amigarun`) ;
+`AMIGAMAC_LANG=fr|en` force la langue.
+
 ## Construire et lancer
 
 ```bash
@@ -160,7 +258,10 @@ swift build && .build/debug/amigarun System "Hello Claude LOUD"
   `hello.c`, `offsets.c`, `boopsitest.c` (sous-classe 68k de `buttongclass`, notifications),
   `gtdemo.c` (tous les gadgets et menus GadTools), `icontest.c` (aller-retour `.info`,
   ToolTypes, icônes par défaut), `asltest.c` (sélecteurs fichier, police, mode d'écran),
-  `wbapp.c` (AppWindow, AppIcon, AppMenuItem, `OpenWorkbenchObject`).
+  `wbapp.c` (AppWindow, AppIcon, AppMenuItem, `OpenWorkbenchObject`), `fputest.c`
+  (compilé pour la FPU et pour `mieee.lib` : sortie identique à la version Mac),
+  `contest.c` (fenêtre CON:), `loctest.c`, `fonttest.c`, `ifftest.c` ; en assembleur
+  `fpu.s` (FMOVEM, formats étendu et BCD, FDBcc…) et `ffp.s` (mathffp).
 - Le Workbench se teste aussi sans interface :
   `amigarun System "loadwb" "wait 2" "input click 62 44" "input click 62 44" "snapshot RAM:wb.ppm"`.
 - Commandes de test du Shell : `INPUT` injecte souris/clavier, `SNAPSHOT` écrit
@@ -175,4 +276,4 @@ swift build && .build/debug/amigarun System "Hello Claude LOUD"
 | 2. Multitâche | ordonnanceur exec (tâches, signaux, Wait, ports, sémaphores, I/O), CreateNewProc, RUN, timer.device | fait |
 | 3. Graphisme | graphics, layers, intuition : écrans et fenêtres dans macOS, IDCMP, gadgets, menus, requêtes | fait |
 | 4. Workbench | icon.library, Workbench (icônes, tiroirs, menus), BOOPSI, gadtools, asl | fait |
-| 5. Compatibilité | FPU 68881/2, utility/locale/diskfont, tests sur de vrais logiciels Aminet | à faire |
+| 5. Compatibilité | FPU 68881/2, math, consoles, locale, diskfont, iffparse, datatypes, son, presse-papiers, dos.library complète, scripts du Shell, logiciels Aminet | en cours (deux lots faits) |

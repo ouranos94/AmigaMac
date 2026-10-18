@@ -24,6 +24,12 @@
 #include <workbench/workbench.h>
 #include <workbench/startup.h>
 #include <libraries/asl.h>
+#include <libraries/locale.h>
+#include <diskfont/diskfont.h>
+#include <datatypes/datatypes.h>
+#include <datatypes/datatypesclass.h>
+#include <datatypes/pictureclass.h>
+#include <datatypes/soundclass.h>
 #define O(s, f) printf("#define %s_%s %d\n", #s, #f, (int)offsetof(struct s, f))
 #define S(s) printf("#define %s_SIZEOF %d\n", #s, (int)sizeof(struct s))
 int main(void) {
@@ -140,5 +146,21 @@ int main(void) {
     O(AppMessage, am_Message); O(AppMessage, am_Type); O(AppMessage, am_UserData); O(AppMessage, am_ID);
     O(AppMessage, am_NumArgs); O(AppMessage, am_ArgList); O(AppMessage, am_Version); O(AppMessage, am_Class);
     O(AppMessage, am_MouseX); O(AppMessage, am_MouseY); O(AppMessage, am_Seconds); O(AppMessage, am_Micros); S(AppMessage);
+    O(Locale, loc_LocaleName); O(Locale, loc_LanguageName); O(Locale, loc_PrefLanguages); O(Locale, loc_Flags); O(Locale, loc_CodeSet); O(Locale, loc_CountryCode); O(Locale, loc_TelephoneCode); O(Locale, loc_GMTOffset); O(Locale, loc_MeasuringSystem); O(Locale, loc_CalendarType); O(Locale, loc_DateTimeFormat); O(Locale, loc_DateFormat); O(Locale, loc_TimeFormat); O(Locale, loc_ShortDateTimeFormat); O(Locale, loc_ShortDateFormat); O(Locale, loc_ShortTimeFormat); O(Locale, loc_DecimalPoint); O(Locale, loc_GroupSeparator); O(Locale, loc_FracGroupSeparator); O(Locale, loc_Grouping); O(Locale, loc_FracGrouping); O(Locale, loc_MonDecimalPoint); O(Locale, loc_MonGroupSeparator); O(Locale, loc_MonFracGroupSeparator); O(Locale, loc_MonGrouping); O(Locale, loc_MonFracGrouping); O(Locale, loc_MonFracDigits); O(Locale, loc_MonIntFracDigits); O(Locale, loc_MonCS); O(Locale, loc_MonSmallCS); O(Locale, loc_MonIntCS); O(Locale, loc_MonPositiveSign); O(Locale, loc_MonPositiveSpaceSep); O(Locale, loc_MonPositiveSignPos); O(Locale, loc_MonPositiveCSPos); O(Locale, loc_MonNegativeSign); O(Locale, loc_MonNegativeSpaceSep); O(Locale, loc_MonNegativeSignPos); O(Locale, loc_MonNegativeCSPos); S(Locale);
+    O(Catalog, cat_Language); O(Catalog, cat_CodeSet); O(Catalog, cat_Version); O(Catalog, cat_Revision); S(Catalog);
+    O(DiskFontHeader, dfh_FileID); O(DiskFontHeader, dfh_Revision); O(DiskFontHeader, dfh_Segment); O(DiskFontHeader, dfh_Name); O(DiskFontHeader, dfh_TF); S(DiskFontHeader);
+    O(FontContents, fc_YSize); O(FontContents, fc_Style); O(FontContents, fc_Flags); S(FontContents); S(FontContentsHeader);
+    O(AvailFonts, af_Type); O(AvailFonts, af_Attr); S(AvailFonts); O(TAvailFonts, taf_Attr); S(TAvailFonts); S(TTextAttr); S(TextAttr);
+    O(TextFont, tf_Message);
+    O(DataType, dtn_Header); O(DataType, dtn_ToolList); O(DataType, dtn_FunctionName); O(DataType, dtn_AttrList); O(DataType, dtn_Length); S(DataType);
+    O(DataTypeHeader, dth_Name); O(DataTypeHeader, dth_BaseName); O(DataTypeHeader, dth_Pattern); O(DataTypeHeader, dth_Mask);
+    O(DataTypeHeader, dth_GroupID); O(DataTypeHeader, dth_ID); O(DataTypeHeader, dth_MaskLen); O(DataTypeHeader, dth_Flags); O(DataTypeHeader, dth_Priority); S(DataTypeHeader);
+    O(BitMapHeader, bmh_Width); O(BitMapHeader, bmh_Height); O(BitMapHeader, bmh_Left); O(BitMapHeader, bmh_Top); O(BitMapHeader, bmh_Depth);
+    O(BitMapHeader, bmh_Masking); O(BitMapHeader, bmh_Compression); O(BitMapHeader, bmh_Transparent); O(BitMapHeader, bmh_XAspect);
+    O(BitMapHeader, bmh_YAspect); O(BitMapHeader, bmh_PageWidth); O(BitMapHeader, bmh_PageHeight); S(BitMapHeader);
+    O(VoiceHeader, vh_OneShotHiSamples); O(VoiceHeader, vh_RepeatHiSamples); O(VoiceHeader, vh_SamplesPerHiCycle); O(VoiceHeader, vh_SamplesPerSec);
+    O(VoiceHeader, vh_Octaves); O(VoiceHeader, vh_Compression); O(VoiceHeader, vh_Volume); S(VoiceHeader);
+    O(DTMethod, dtm_Label); O(DTMethod, dtm_Command); O(DTMethod, dtm_Method); S(DTMethod);
+    O(dtTrigger, dtt_GInfo); O(dtTrigger, dtt_Function); O(dtTrigger, dtt_Data);
     return 0;
 }

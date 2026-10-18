@@ -7,6 +7,7 @@
 #include "cpu68k.h"
 #include "mem.h"
 #include <stddef.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -1208,20 +1209,27 @@ static void legal_init(void) {
     legal_ready = 1;
 }
 
+#include "fpu68k.inc"
+
 /* ---- main loop ---------------------------------------------------------- */
 
 void cpu68k_init(M68K *c, int model) {
     memset(c, 0, offsetof(M68K, aline));
     c->model = model;
+    c->fpu = model >= CPU_68020;
+    for (int i = 0; i < 8; i++) c->fp[i] = NAN;
     c->sr = 0;                                           /* user mode, interrupts enabled */
     if (!legal_ready) legal_init();
 }
+
+int cpu68k_trace;
 
 uint64_t cpu68k_run(M68K *c, uint64_t max) {
     uint64_t n = 0;
     c->stop = 0;
     while (!c->stop && n < max) {
         c->insn_pc = c->pc;
+        if (cpu68k_trace) c->hist[c->hidx++ & 31] = c->pc;
         c->ir = (uint16_t)fetch16(c);
         n++;
         if (!legal_tab[c->ir]) { illegal(c); continue; }
@@ -1244,7 +1252,10 @@ uint64_t cpu68k_run(M68K *c, uint64_t max) {
             else { c->pc = c->insn_pc; cpu68k_exception(c, VEC_LINE_A); }
             break;
         case 0xE: groupE(c); break;
-        case 0xF: c->pc = c->insn_pc; cpu68k_exception(c, VEC_LINE_F); break;
+        case 0xF:
+            if (c->fpu && ((c->ir >> 9) & 7) == 1) fpu_exec(c);
+            else { c->pc = c->insn_pc; cpu68k_exception(c, VEC_LINE_F); }
+            break;
         }
     }
     c->insns += n;

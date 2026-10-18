@@ -5,8 +5,10 @@
 #include "os.h"
 #include "sched.h"
 #include "gfx.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 uint32_t GfxBase;
 static uint32_t topaz8, topaz9;
@@ -240,9 +242,12 @@ static uint32_t make_font(const char *name, int ysize) {
 uint32_t gfx_default_font(void) { return topaz8; }
 
 uint32_t gfx_open_font(const char *name, int ysize) {
-    (void)name;
-    /* only the built-in topaz replacement for now: nearest size */
-    uint32_t f = ysize >= 9 ? topaz9 : topaz8;
+    /* a font in the system list (built-in topaz, or loaded by diskfont) */
+    uint32_t f = font_in_memory(name, ysize, 0);
+    if (!f) {
+        if (strcasecmp(name, "topaz.font") && strcasecmp(name, "topaz")) return 0;
+        f = ysize >= 9 ? topaz9 : topaz8;
+    }
     wr16(f + TextFont_tf_Accessors, rd16(f + TextFont_tf_Accessors) + 1);
     return f;
 }
@@ -339,6 +344,21 @@ static uint32_t g_GetBitMapAttr(M68K *c) {
 static uint32_t g_SetAPen(M68K *c) { wr8(RPA(c) + RastPort_FgPen, c->d[0]); return 0; }
 static uint32_t g_SetBPen(M68K *c) { wr8(RPA(c) + RastPort_BgPen, c->d[0]); return 0; }
 static uint32_t g_SetDrMd(M68K *c) { wr8(RPA(c) + RastPort_DrawMode, c->d[0]); return 0; }
+static uint32_t g_SetABPenDrMd(M68K *c) {
+    wr8(c->a[1] + RastPort_FgPen, c->d[0]);
+    wr8(c->a[1] + RastPort_BgPen, c->d[1]);
+    wr8(c->a[1] + RastPort_DrawMode, c->d[2]);
+    return 0;
+}
+/* InitGels(head, tail, gelsInfo): the two sentinel VSprites of an empty GEL list
+   (VSprite: NextVSprite 0, PrevVSprite 4, Y 22, X 24; GelsInfo: gelHead 2, gelTail 6) */
+static uint32_t g_InitGels(M68K *c) {
+    uint32_t head = c->a[0], tail = c->a[1], gi = c->a[2];
+    wr32(head, tail); wr32(head + 4, 0); wr16(head + 22, 0x8000); wr16(head + 24, 0x8000);
+    wr32(tail, 0); wr32(tail + 4, head); wr16(tail + 22, 0x7FFF); wr16(tail + 24, 0x7FFF);
+    if (gi) { wr32(gi + 2, head); wr32(gi + 6, tail); }
+    return 0;
+}
 static uint32_t g_SetOutlinePen(M68K *c) {
     uint32_t old = rd8(c->a[0] + RastPort_AOlPen);
     wr8(c->a[0] + RastPort_AOlPen, c->d[0]);
@@ -707,6 +727,7 @@ static uint32_t g_Text(M68K *c) {
     int n = (int)(c->d[0] & 0xFFFF);
     if (n > (int)sizeof buf) n = sizeof buf;
     for (int i = 0; i < n; i++) buf[i] = (char)rd8(c->a[0] + (uint32_t)i);
+    if (cpu68k_trace) os_log("Text(\"%.*s\")", n, buf);
     rp_text(c->a[1], buf, n);
     return 0;
 }
@@ -916,7 +937,11 @@ static uint32_t g_ObtainPen(M68K *c) {
 }
 static uint32_t g_ReleasePen(M68K *c) { (void)c; return 0; }
 static uint32_t g_SetMaxPen(M68K *c) { (void)c; return 0; }
-static uint32_t g_GetVPModeID(M68K *c) { return c->a[0] ? 0x8000 : 0xFFFFFFFF; }   /* HIRES_KEY */
+static uint32_t g_GetVPModeID(M68K *c) {
+    if (!c->a[0]) return 0xFFFFFFFF;
+    uint32_t cm = rd32(c->a[0] + ViewPort_ColorMap), id = cm ? rd32(cm + 36) : 0;   /* cm_VPModeID */
+    return id ? id : 0x00029000;
+}
 
 /* ---- chunky pixels (V40) ---------------------------------------------------- */
 
@@ -1021,12 +1046,159 @@ static uint32_t g_OrRectRegion(M68K *c) {
 }
 static uint32_t g_true(M68K *c) { (void)c; return DOSTRUE; }
 
+
+/* ---- the display database: the PAL modes AmigaMac shows ----------------------- */
+
+/* res: 0 low, 1 high, 2 super-high (PAL pixels), 3 square pixels (the larger
+   "AmigaMac:" modes, as an RTG graphics card would offer) */
+typedef struct { uint32_t id; int w, h, rx, ry, res, lace; const char *name; } DMode;
+static const DMode dmodes[] = {
+    { 0x00021000, 320, 256, 44, 44, 0, 0, "PAL:LowRes" },
+    { 0x00021004, 320, 512, 44, 22, 0, 1, "PAL:LowRes Laced" },
+    { 0x00029000, 640, 256, 22, 44, 1, 0, "PAL:HighRes" },
+    { 0x00029004, 640, 512, 22, 22, 1, 1, "PAL:HighRes Laced" },
+    { 0x00029020, 1280, 256, 11, 44, 2, 0, "PAL:SuperHighRes" },
+    { 0x00029024, 1280, 512, 11, 22, 2, 1, "PAL:SuperHighRes Laced" },
+    { 0x50011000, 800, 600, 22, 22, 3, 0, "AmigaMac: 800x600" },
+    { 0x50021000, 1024, 768, 22, 22, 3, 0, "AmigaMac: 1024x768" },
+    { 0x50031000, 1280, 720, 22, 22, 3, 0, "AmigaMac: 1280x720" },
+    { 0x50041000, 1280, 800, 22, 22, 3, 0, "AmigaMac: 1280x800" },
+    { 0x50051000, 1440, 900, 22, 22, 3, 0, "AmigaMac: 1440x900" },
+    { 0x50061000, 1920, 1080, 22, 22, 3, 0, "AmigaMac: 1920x1080" },
+};
+#define NDMODES ((int)(sizeof dmodes / sizeof *dmodes))
+
+static const DMode *dmode(uint32_t id) {
+    if (!(id & 0xFFFF0000u)) id |= 0x00021000;                  /* default monitor = PAL */
+    if ((id & 0xFFFF0000u) == 0x00011000 || (id & 0xFFFF0000u) == 0x00031000) id = (id & 0xFFFF) | 0x00021000;   /* NTSC, DBLPAL... shown as PAL */
+    if ((id & 0xFFFF0000u) == 0x00020000 && !(id & 0x1000)) id |= 0x1000;
+    for (int i = 0; i < NDMODES; i++) if (dmodes[i].id == (id & ~0x0880u)) return &dmodes[i];   /* HAM, EHB */
+    return 0;
+}
+
+/* for intuition: the size and pixel kind of a mode; 0 when unknown */
+int gfx_mode_info(uint32_t id, int *w, int *h, int *res, int *lace) {
+    const DMode *m = dmode(id);
+    if (!m) return 0;
+    *w = m->w; *h = m->h; *res = m->res; *lace = m->lace;
+    return 1;
+}
+uint32_t gfx_mode_id(int i, char *name, int max) {
+    if (i < 0 || i >= NDMODES) return 0xFFFFFFFFu;
+    if (name) snprintf(name, (size_t)max, "%s", dmodes[i].name);
+    return dmodes[i].id;
+}
+static uint32_t dhandles;                                       /* a word per mode, the "handle" */
+
+static uint32_t g_FindDisplayInfo(M68K *c) {
+    const DMode *m = dmode(c->d[0]);
+    if (!m) return 0;
+    if (!dhandles) dhandles = exec_allocmem(4 * NDMODES, MEMF_PUBLIC | MEMF_CLEAR);
+    return dhandles + 4 * (uint32_t)(m - dmodes);
+}
+static uint32_t g_NextDisplayInfo(M68K *c) {
+    uint32_t last = c->d[0];
+    if (last == 0xFFFFFFFFu) return dmodes[0].id;
+    for (int i = 0; i < NDMODES - 1; i++) if (dmodes[i].id == last) return dmodes[i + 1].id;
+    return 0xFFFFFFFFu;
+}
+static uint32_t g_ModeNotAvailable(M68K *c) { return dmode(c->d[0]) ? 0 : 1; }
+
+/* GetDisplayInfoData(handle, buf, size, tagID, displayID) */
+static uint32_t g_GetDisplayInfoData(M68K *c) {
+    uint32_t h = c->a[0], buf = c->a[1], size = c->d[0], tag = c->d[1], id = c->d[2];
+    const DMode *m = h && dhandles && h >= dhandles && h < dhandles + 4 * NDMODES ? &dmodes[(h - dhandles) / 4] : dmode(id);
+    if (!m || !buf) return 0;
+    uint8_t d[96];
+    memset(d, 0, sizeof d);
+    uint32_t len;
+#define W16(o, v) (d[o] = (uint8_t)((v) >> 8), d[(o) + 1] = (uint8_t)(v))
+#define W32(o, v) (W16(o, (v) >> 16), W16((o) + 2, (v) & 0xFFFF))
+    W32(0, tag);
+    W32(4, m->id);
+    W32(8, 3);                                                   /* TAG_SKIP */
+    switch (tag) {
+    case 0x80000000:                                             /* DTAG_DISP: DisplayInfo */
+        len = 56;
+        W32(18, (m->lace ? 0x1u : 0) | (m->res == 3 ? 0x2000u : 0));  /* DIPF_IS_LACE, DIPF_IS_FOREIGN */
+        W16(22, m->rx); W16(24, m->ry);
+        W16(26, m->rx == 22 ? 70 : 140);
+        W16(28, 8);
+        W16(30, 4095);
+        W16(32, 44); W16(34, 44);
+        d[40] = d[41] = d[42] = 8;
+        break;
+    case 0x80001000:                                             /* DTAG_DIMS: DimensionInfo */
+        len = 88;
+        W16(18, 16); W16(20, 16); W16(22, 16368); W16(24, 16384);
+        W16(16, 8);
+        for (int r = 0; r < 5; r++) { int o = 26 + 8 * r; W16(o, 0); W16(o + 2, 0); W16(o + 4, m->w - 1); W16(o + 6, m->h - 1); }
+        break;
+    case 0x80002000:                                             /* DTAG_MNTR: MonitorInfo */
+        len = 96;
+        W16(24, 22); W16(26, 22);                                /* ViewResolution */
+        W16(36, 312); W16(38, 227);
+        W16(76, 22); W16(78, 22);
+        W32(84, 0x00029000);
+        break;
+    case 0x80003000:                                             /* DTAG_NAME: NameInfo */
+        len = 56;
+        for (int i = 0; m->name[i] && i < 31; i++) d[16 + i] = (uint8_t)m->name[i];
+        break;
+    default: return 0;
+    }
+#undef W16
+#undef W32
+    uint32_t n = size < len ? size : len;
+    /* QueryHeader Length is in double longwords */
+    d[12] = 0; d[13] = 0; d[14] = (uint8_t)((len / 8) >> 8); d[15] = (uint8_t)(len / 8);
+    for (uint32_t i = 0; i < n; i++) wr8(buf + i, d[i]);
+    return n;
+}
+
+/* BestModeIDA(tags): the PAL mode closest to the wanted size */
+static uint32_t g_BestModeIDA(M68K *c) {
+    uint32_t tags = c->a[0];
+    int w = (int)tag_get(tags, 0x80000005u, 640), h = (int)tag_get(tags, 0x80000006u, 256);   /* BIDTAG_NominalWidth/Height */
+    w = (int)tag_get(tags, 0x80000007u, (uint32_t)w);                                          /* BIDTAG_DesiredWidth */
+    h = (int)tag_get(tags, 0x80000008u, (uint32_t)h);                                          /* BIDTAG_DesiredHeight */
+    uint32_t id = w > 320 ? 0x00029000 : 0x00021000;
+    if (h > 256) id |= 4;
+    return id;
+}
+
+/* BitMapScale(BitScaleArgs): nearest pixel, as the blitter-free scaler does */
+static uint32_t g_BitMapScale(M68K *c) {
+    uint32_t a = c->a[0];
+    int sx = rd16(a), sy = rd16(a + 2), sw = rd16(a + 4), sh = rd16(a + 6);
+    int xsf = rd16(a + 8), ysf = rd16(a + 10), dx = rd16(a + 12), dy = rd16(a + 14);
+    int xdf = rd16(a + 20), ydf = rd16(a + 22);
+    if (!xsf || !ysf) return 0;
+    int dw = sw * xdf / xsf, dh = sh * ydf / ysf;
+    wr16(a + 16, (uint32_t)dw);
+    wr16(a + 18, (uint32_t)dh);
+    BM s, d;
+    if (!bm_load(rd32(a + 24), &s) || !bm_load(rd32(a + 28), &d) || dw <= 0 || dh <= 0) return 0;
+    for (int y = 0; y < dh; y++) {
+        int yy = sy + y * sh / dh;
+        for (int x = 0; x < dw; x++) bm_pixel(&d, dx + x, dy + y, bm_read(&s, sx + x * sw / dw, yy), JAM1, 0xFF);
+    }
+    gfx_touch();
+    return 0;
+}
+static uint32_t g_ScalerDiv(M68K *c) {
+    uint32_t f = c->d[0] & 0xFFFF, n = c->d[1] & 0xFFFF, d = c->d[2] & 0xFFFF;
+    if (!d) return 0;
+    uint32_t r = (f * n + d / 2) / d;
+    return r ? r : (f ? 1 : 0);
+}
+
 static const NativeEntry gfx_natives[] = {
     { "InitRastPort", g_InitRastPort }, { "InitBitMap", g_InitBitMap },
     { "AllocBitMap", g_AllocBitMap }, { "FreeBitMap", g_FreeBitMap }, { "GetBitMapAttr", g_GetBitMapAttr },
     { "AllocRaster", g_AllocRaster }, { "FreeRaster", g_FreeRaster },
     { "SetAPen", g_SetAPen }, { "SetBPen", g_SetBPen }, { "SetDrMd", g_SetDrMd },
-    { "SetOutlinePen", g_SetOutlinePen }, { "SetWriteMask", g_SetWriteMask },
+    { "SetOutlinePen", g_SetOutlinePen }, { "SetABPenDrMd", g_SetABPenDrMd }, { "InitGels", g_InitGels }, { "SetWriteMask", g_SetWriteMask },
     { "GetAPen", g_GetAPen }, { "GetBPen", g_GetBPen }, { "GetDrMd", g_GetDrMd }, { "GetOutlinePen", g_GetOutlinePen },
     { "Move", g_Move }, { "Draw", g_Draw }, { "PolyDraw", g_PolyDraw },
     { "RectFill", g_RectFill }, { "EraseRect", g_EraseRect }, { "WritePixel", g_WritePixel },
@@ -1045,6 +1217,9 @@ static const NativeEntry gfx_natives[] = {
     { "GetColorMap", g_GetColorMap }, { "FreeColorMap", g_FreeColorMap },
     { "ObtainBestPenA", g_ObtainBestPenA }, { "FindColor", g_FindColor }, { "ObtainPen", g_ObtainPen },
     { "ReleasePen", g_ReleasePen }, { "SetMaxPen", g_SetMaxPen }, { "GetVPModeID", g_GetVPModeID },
+    { "FindDisplayInfo", g_FindDisplayInfo }, { "NextDisplayInfo", g_NextDisplayInfo },
+    { "GetDisplayInfoData", g_GetDisplayInfoData }, { "ModeNotAvailable", g_ModeNotAvailable }, { "BestModeIDA", g_BestModeIDA },
+    { "BitMapScale", g_BitMapScale }, { "ScalerDiv", g_ScalerDiv },
     { "WriteChunkyPixels", g_WriteChunkyPixels }, { "WritePixelArray8", g_WritePixelArray8 },
     { "ReadPixelArray8", g_ReadPixelArray8 }, { "WritePixelLine8", g_WritePixelLine8 },
     { "ReadPixelLine8", g_ReadPixelLine8 },

@@ -89,12 +89,14 @@ typedef struct NScreen NScreen;
 struct NScreen {
     uint32_t scr;                   /* struct Screen */
     int id;                         /* host window id */
-    int w, h, depth, hires, lace;
+    int w, h, depth, hires, lace;   /* hires: 0 low, 1 high, 2 super-high, 3 square pixels */
+    uint32_t modeid;                /* display database ID */
     uint32_t pal[256];              /* 0x00RRGGBB */
     uint16_t pens[NUMDRIPENS];
     uint32_t drawinfo;
     int locks;                      /* LockPubScreen count */
     int workbench;
+    uint32_t custom_bm;             /* CUSTOMBITMAP / SA_BitMap: the program's own BitMap */
     NWindow *wins;                  /* front to back */
     uint8_t *ov;                    /* menu overlay: pen per pixel, 0xFF transparent */
     NScreen *next;
@@ -102,12 +104,18 @@ struct NScreen {
 
 struct NWindow {
     uint32_t win, rp, layer, bm;
+    uint32_t ibm, irp;              /* GIMMEZEROZERO: the inner bitmap and the program's RastPort */
+    int shared_bm;                  /* a borderless backdrop window at 0,0 draws into the screen's bitmap */
     NScreen *s;
     uint32_t task;                  /* opener: owner of the UserPort signal */
     int own_port;                   /* UserPort created by intuition */
     int x, y, w, h;
+    /* native consumer of this window's keys and events (consoles) */
+    void (*hook)(NWindow *w, int kind, int a, int b, int c);
     NWindow *next;                  /* towards the back */
 };
+
+enum { HOOK_KEY = 1, HOOK_CLOSE, HOOK_NEWSIZE };
 
 extern pthread_mutex_t disp_lock;
 extern NScreen *screens;
@@ -142,6 +150,8 @@ extern const NativeEntry intui_input_natives[];
 
 /* boopsi.c */
 typedef uint32_t (*Dispatcher)(M68K *c, uint32_t cl, uint32_t obj, uint32_t msg);
+uint32_t bo_dispatch(M68K *c, uint32_t cl, uint32_t obj, uint32_t msg);
+uint32_t bo_class_of(uint32_t obj);
 uint32_t bo_native_class(const char *name, const char *super, int instsize, Dispatcher fn);
 uint32_t bo_new(M68K *c, uint32_t cl, uint32_t tags);
 uint32_t bo_inst(uint32_t cl, uint32_t obj);

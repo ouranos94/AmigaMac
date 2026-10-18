@@ -56,6 +56,8 @@ enum { NT_UNKNOWN, NT_TASK, NT_INTERRUPT, NT_DEVICE, NT_MSGPORT, NT_MESSAGE, NT_
 #define EB_SIZE 632
 #define AFF_68010 0x01
 #define AFF_68020 0x02
+#define AFF_68881 0x10
+#define AFF_68882 0x20
 
 /* exec/tasks.h */
 #define TC_FLAGS 14

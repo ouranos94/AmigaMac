@@ -130,12 +130,16 @@ static uint32_t tag_value(uint32_t tags, uint32_t tag, uint32_t def) {
 #define SA_LikeWorkbench 0x80000047
 #define NOTAG 0xDEADBEEF
 
-static NScreen *open_screen(int w, int h, int depth, int hires, int lace, const char *title,
+extern int gfx_mode_info(uint32_t id, int *w, int *h, int *res, int *lace);
+
+static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char *title,
                             int type, int showtitle, uint32_t pens, int workbench) {
     if (depth < 1) depth = 1;
     if (depth > 8) depth = 8;
+    int mw, mh, hires = 1, lace = 0;
+    if (!gfx_mode_info(modeid, &mw, &mh, &hires, &lace)) { modeid = 0x00029000; hires = 1; lace = 0; }
     NScreen *s = calloc(1, sizeof *s);
-    s->w = w; s->h = h; s->depth = depth; s->hires = hires; s->lace = lace;
+    s->w = w; s->h = h; s->depth = depth; s->hires = hires; s->lace = lace; s->modeid = modeid;
     s->workbench = workbench;
     s->id = next_screen_id++;
     uint32_t scr = exec_allocmem(Screen_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
@@ -166,12 +170,13 @@ static NScreen *open_screen(int w, int h, int depth, int hires, int lace, const 
     uint32_t vp = scr + Screen_ViewPort;
     wr16(vp + ViewPort_DWidth, w);
     wr16(vp + ViewPort_DHeight, h);
-    wr16(vp + ViewPort_Modes, (hires ? 0x8000 : 0) | (lace ? 4 : 0));
+    wr16(vp + ViewPort_Modes, (hires ? 0x8000 : 0) | (lace ? 4 : 0) | (hires == 2 ? 0x20 : 0));
     int ncol = 1 << depth;
     uint32_t cm = exec_allocmem(ColorMap_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
     wr8(cm + ColorMap_Type, 1);
     wr16(cm + ColorMap_Count, ncol < 32 ? 32 : ncol);
     wr32(cm + ColorMap_ColorTable, exec_allocmem(2u * (ncol < 32 ? 32 : ncol), MEMF_PUBLIC | MEMF_CLEAR));
+    wr32(cm + 36, modeid);                                          /* cm_VPModeID */
     wr32(vp + ViewPort_ColorMap, cm);
     /* embedded BitMap and RastPort */
     uint32_t bm = scr + Screen_BitMap;
@@ -198,8 +203,9 @@ static NScreen *open_screen(int w, int h, int depth, int hires, int lace, const 
     wr32(di + DrawInfo_dri_Pens, dp);
     wr32(di + DrawInfo_dri_Font, font);
     wr16(di + DrawInfo_dri_Depth, (uint32_t)depth);
-    wr16(di + DrawInfo_dri_Resolution, 44);
-    wr16(di + DrawInfo_dri_Resolution + 2, hires ? 44 : 22);
+    /* ticks per pixel: a hires non-laced pixel is twice as tall as wide */
+    wr16(di + DrawInfo_dri_Resolution, hires == 0 ? 44 : hires == 2 ? 11 : 22);
+    wr16(di + DrawInfo_dri_Resolution + 2, hires == 3 || lace ? 22 : 44);
     wr32(di + DrawInfo_dri_Flags, 1);                                /* DRIF_NEWLOOK */
     s->drawinfo = di;
     s->ov = malloc((size_t)w * h);
@@ -217,11 +223,43 @@ static NScreen *open_screen(int w, int h, int depth, int hires, int lace, const 
     return s;
 }
 
+/* ScreenMode preferences: FORM PREF, PRHD, SCRM {Reserved[4], DisplayID, Width, Height, Depth, Control} */
+static int read_screenmode_prefs(const char *apath, uint32_t *id, int *w, int *h, int *depth) {
+    char hp[1024];
+    if (!dos_resolve(apath, hp, sizeof hp)) return 0;
+    FILE *f = fopen(hp, "rb");
+    if (!f) return 0;
+    uint8_t b[512];
+    size_t n = fread(b, 1, sizeof b, f);
+    fclose(f);
+    if (n < 12 || memcmp(b, "FORM", 4) || memcmp(b + 8, "PREF", 4)) return 0;
+    for (size_t p = 12; p + 8 <= n;) {
+        uint32_t sz = (uint32_t)b[p + 4] << 24 | (uint32_t)b[p + 5] << 16 | (uint32_t)b[p + 6] << 8 | b[p + 7];
+        if (!memcmp(b + p, "SCRM", 4) && sz >= 28 && p + 8 + 28 <= n) {
+            const uint8_t *d = b + p + 8;
+            *id = (uint32_t)d[16] << 24 | (uint32_t)d[17] << 16 | (uint32_t)d[18] << 8 | d[19];
+            *w = d[20] << 8 | d[21];
+            *h = d[22] << 8 | d[23];
+            *depth = d[24] << 8 | d[25];
+            return 1;
+        }
+        p += 8 + ((sz + 1) & ~1u);
+    }
+    return 0;
+}
+
 NScreen *workbench_screen(int open_it) {
     for (NScreen *s = screens; s; s = s->next) if (s->workbench) return s;
     if (!open_it) return 0;
-    NScreen *s = open_screen(640, 256, 3, 1, 0, "AmigaMac Workbench", 1 /* WBENCHSCREEN */, 1, 0, 1);
-    return s;
+    uint32_t id = 0x00029000;
+    int w = 0, h = 0, depth = 3, mw, mh, res, lace;
+    if (!read_screenmode_prefs("ENV:Sys/screenmode.prefs", &id, &w, &h, &depth))
+        read_screenmode_prefs("ENVARC:Sys/screenmode.prefs", &id, &w, &h, &depth);
+    if (!gfx_mode_info(id, &mw, &mh, &res, &lace)) { id = 0x00029000; mw = 640; mh = 256; }
+    if (w < 320 || w > 4096) w = mw;                           /* 0 or STDSCREENWIDTH: the mode's size */
+    if (h < 200 || h > 4096) h = mh;
+    if (depth < 1 || depth > 8) depth = 3;
+    return open_screen(w, h, depth, id, "AmigaMac Workbench", 1 /* WBENCHSCREEN */, 1, 0, 1);
 }
 
 static uint32_t i_OpenScreenTagList(M68K *c) {
@@ -243,14 +281,35 @@ static uint32_t i_OpenScreenTagList(M68K *c) {
     title = tag_value(tags, SA_Title, title);
     pens = tag_value(tags, SA_Pens, 0);
     uint32_t id = tag_value(tags, SA_DisplayID, NOTAG);
-    if (id != NOTAG) modes = (id & 0x8000 ? 0x8000 : 0) | (id & 4 ? 4 : 0);
-    int hires = (modes & 0x8000) != 0, lace = (modes & 4) != 0;
-    if (w <= 0 || w > 4096) w = hires ? 640 : 320;            /* STDSCREENWIDTH (-1) */
-    if (h <= 0 || h > 4096) h = lace ? 512 : 256;
+    if (id == NOTAG) id = 0x00021000 | (modes & (0x8000 | 0x20 | 4));    /* ViewModes: HIRES, SUPERHIRES, LACE */
+    if (tag_value(tags, SA_LikeWorkbench, 0)) {
+        NScreen *wbs = workbench_screen(1);
+        id = wbs->modeid;
+        w = wbs->w;
+        h = wbs->h;
+        depth = (int)tag_value(tags, SA_Depth, (uint32_t)wbs->depth);
+    }
+    int mw = 640, mh = 256, res, lace;
+    if (!gfx_mode_info(id, &mw, &mh, &res, &lace)) { id = 0x00021000 | (modes & (0x8000 | 4)); gfx_mode_info(id, &mw, &mh, &res, &lace); }
+    if (w <= 0 || w > 4096) w = mw;                           /* STDSCREENWIDTH (-1) */
+    if (h <= 0 || h > 4096) h = mh;
     char t[128] = "";
     if (title) str_get(title, t, sizeof t);
     int showtitle = (int)tag_value(tags, SA_ShowTitle, 1);
-    NScreen *s = open_screen(w, h, depth, hires, lace, t, type & 0xF, showtitle, pens, 0);
+    uint32_t cbm = (ns && (type & 0x40)) ? rd32(ns + NewScreen_CustomBitMap) : 0;   /* CUSTOMBITMAP */
+    cbm = tag_value(tags, 0x8000002E /* SA_BitMap */, cbm);
+    if (cbm) depth = rd8(cbm + BitMap_Depth);
+    NScreen *s = open_screen(w, h, depth, id, t, type & 0xF, showtitle, pens, 0);
+    if (cbm) {
+        /* the program's BitMap is the display: the screen's own planes go */
+        uint32_t bm = s->scr + Screen_BitMap;
+        BM b;
+        bm_load(bm, &b);
+        for (int i = 0; i < b.depth; i++) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
+        for (int i = 0; i < BitMap_SIZEOF; i++) wr8(bm + (uint32_t)i, rd8(cbm + (uint32_t)i));
+        wr32(s->scr + Screen_RastPort + RastPort_BitMap, cbm);
+        s->custom_bm = cbm;
+    }
     /* SA_Colors: ColorSpec {index, r, g, b (4 bits)} until index -1 */
     uint32_t cs = tag_value(tags, SA_Colors, 0);
     for (; cs && (int16_t)rd16(cs) != -1; cs += 8)
@@ -268,6 +327,15 @@ static uint32_t i_OpenScreenTagList(M68K *c) {
 }
 
 static uint32_t i_OpenScreen(M68K *c) { c->a[1] = 0; return i_OpenScreenTagList(c); }
+
+/* QueryOverscan(displayID, rect, oScanType): the whole PAL display */
+static uint32_t i_QueryOverscan(M68K *c) {
+    uint32_t id = c->a[0], r = c->a[1];
+    int w, h, res, lace;
+    if (!gfx_mode_info(id, &w, &h, &res, &lace)) { w = (id & 0x8000) ? 640 : 320; h = (id & 4) ? 512 : 256; }
+    wr16(r, 0); wr16(r + 2, 0); wr16(r + 4, (uint32_t)(w - 1)); wr16(r + 6, (uint32_t)(h - 1));
+    return DOSTRUE;
+}
 
 static void free_screen(NScreen *s) {
     pthread_mutex_lock(&disp_lock);
@@ -287,7 +355,7 @@ static void free_screen(NScreen *s) {
     uint32_t bm = s->scr + Screen_BitMap;
     BM b;
     bm_load(bm, &b);
-    for (int i = 0; i < b.depth; i++) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
+    if (!s->custom_bm) for (int i = 0; i < b.depth; i++) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
     free(s->ov);
     exec_freemem(s->scr, Screen_SIZEOF);
     free(s);
@@ -527,9 +595,15 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
     uint32_t win = exec_allocmem(Window_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
     uint32_t rp = exec_allocmem(RastPort_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
     uint32_t layer = exec_allocmem(Layer_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
-    uint32_t bm = gfx_alloc_bitmap(w, h, s->depth, 1);
+    int shared = (flags & WFLG_BORDERLESS) && x == 0 && y == 0 && !s->workbench;
+    /* never reallocated; a borderless window from 0,0 of a custom screen is the screen's bitmap, as on
+       the Amiga where a visible window is the screen's bitmap: programs draw into either */
+    uint32_t bm = shared ? rd32(s->scr + Screen_RastPort + RastPort_BitMap)
+                         : gfx_alloc_bitmap(w > s->w ? w : s->w, h > s->h ? h : s->h, s->depth, 1);
     NWindow *nwn = calloc(1, sizeof *nwn);
     nwn->win = win; nwn->rp = rp; nwn->layer = layer; nwn->bm = bm; nwn->s = s;
+    nwn->shared_bm = shared;
+    if (getenv("AMIGAMAC_TRACE")) os_log("OpenWindow : %d,%d %dx%d flags %08X%s", x, y, w, h, flags, shared ? " (bitmap de l'écran)" : "");
     nwn->task = this_task();
     nwn->x = x; nwn->y = y; nwn->w = w; nwn->h = h;
 
@@ -562,7 +636,20 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
     wr32(win + Window_IFont, gfx_default_font());
     wr32(win + Window_WindowPort, ireply_port);
     if (idcmp) { wr32(win + Window_UserPort, new_port_for(nwn->task)); nwn->own_port = 1; }
-    if (flags & WFLG_GIMMEZEROZERO) os_log("OpenWindow : WFLG_GIMMEZEROZERO traité comme une fenêtre normale");
+    if (flags & WFLG_GIMMEZEROZERO) {
+        /* the program draws into its own inner bitmap, laid over the frame */
+        int iw2 = w - bl - br, ih2 = h - bt - bb;
+        nwn->ibm = gfx_alloc_bitmap(s->w, s->h, s->depth, 1);
+        nwn->irp = exec_allocmem(RastPort_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
+        rp_init(nwn->irp);
+        wr32(nwn->irp + RastPort_BitMap, nwn->ibm);
+        wr32(nwn->irp + RastPort_Layer, layer);
+        wr8(nwn->irp + RastPort_FgPen, s->pens[TEXTPEN]);
+        wr32(win + Window_RPort, nwn->irp);
+        BM ib;
+        bm_load(nwn->ibm, &ib);
+        bm_fill(&ib, 0, 0, iw2 - 1, ih2 - 1, s->pens[BACKGROUNDPEN], JAM1, 0xFF);
+    }
 
     rp_init(rp);
     wr32(rp + RastPort_BitMap, bm);
@@ -630,8 +717,9 @@ void close_window(NWindow *w) {
         strip_messages(port, win);
         if (w->own_port) free_port(port);
     }
-    gfx_free_bitmap(w->bm);
+    if (!w->shared_bm) gfx_free_bitmap(w->bm);
     exec_freemem(w->rp, RastPort_SIZEOF);
+    if (w->ibm) { gfx_free_bitmap(w->ibm); exec_freemem(w->irp, RastPort_SIZEOF); }
     exec_freemem(w->layer, Layer_SIZEOF);
     exec_freemem(win, Window_SIZEOF);
     free(w);
@@ -727,24 +815,26 @@ void win_resize(NWindow *w, int width, int height) {
     if (w->x + width > w->s->w) width = w->s->w - w->x;
     if (w->y + height > w->s->h) height = w->s->h - w->y;
     if (width == w->w && height == w->h) return;
-    /* new bitmap, old contents kept where they fit */
-    uint32_t nb = gfx_alloc_bitmap(width, height, w->s->depth, 1);
-    BM ob, nbm;
-    bm_load(w->bm, &ob);
-    bm_load(nb, &nbm);
-    bm_fill(&nbm, 0, 0, width - 1, height - 1, w->s->pens[BACKGROUNDPEN], JAM1, 0xFF);
+    /* the bitmaps are screen-sized from the start and never move (programs keep
+       copies of the RastPort): only what the old frame covered is cleared */
     int bl = (int8_t)rd8(win + Window_BorderLeft), bt = (int8_t)rd8(win + Window_BorderTop);
     int br = (int8_t)rd8(win + Window_BorderRight), bb = (int8_t)rd8(win + Window_BorderBottom);
-    int cw = (w->w < width ? w->w : width) - bl - br, ch = (w->h < height ? w->h : height) - bt - bb;
-    if (cw > 0 && ch > 0) bm_copy(&ob, bl, bt, &nbm, bl, bt, cw, ch, 0xC0, 0xFF);
+    int ow = w->w, oh = w->h, bg = w->s->pens[BACKGROUNDPEN];
+    BM b;
+    bm_load(w->bm, &b);
+    /* old right and bottom borders, and anything newly uncovered */
+    bm_fill(&b, ow - br, 0, width - 1, height - 1, bg, JAM1, 0xFF);
+    bm_fill(&b, 0, oh - bb, width - 1, height - 1, bg, JAM1, 0xFF);
+    if (w->ibm) {
+        BM ib;
+        bm_load(w->ibm, &ib);
+        bm_fill(&ib, ow - bl - br, 0, width - 1, height - 1, bg, JAM1, 0xFF);
+        bm_fill(&ib, 0, oh - bt - bb, width - 1, height - 1, bg, JAM1, 0xFF);
+    }
     pthread_mutex_lock(&disp_lock);
-    uint32_t old = w->bm;
-    w->bm = nb;
     w->w = width;
     w->h = height;
     pthread_mutex_unlock(&disp_lock);
-    gfx_free_bitmap(old);
-    wr32(w->rp + RastPort_BitMap, nb);
     wr16(win + Window_Width, (uint32_t)width);
     wr16(win + Window_Height, (uint32_t)height);
     wr16(win + Window_GZZWidth, (uint32_t)(width - bl - br));
@@ -765,6 +855,8 @@ void win_resize(NWindow *w, int width, int height) {
 
 void send_idcmp(NWindow *w, uint32_t cls, uint32_t code, uint32_t qual, uint32_t iaddr, int mx, int my) {
     uint32_t win = w->win, port = rd32(win + Window_UserPort);
+    if (w->hook && cls == IDCMP_CLOSEWINDOW) w->hook(w, HOOK_CLOSE, 0, 0, 0);
+    if (w->hook && cls == IDCMP_NEWSIZE) w->hook(w, HOOK_NEWSIZE, 0, 0, 0);
     if (!port || !(rd32(win + Window_IDCMPFlags) & cls)) return;
     uint32_t m = exec_allocmem(56, MEMF_PUBLIC | MEMF_CLEAR);
     wr8(m + LN_TYPE, NT_MESSAGE);
@@ -866,6 +958,9 @@ static uint32_t i_ScrollWindowRaster(M68K *c) {
 
 /* ---- screens from programs ------------------------------------------------- */
 
+/* PubScreenStatus(screen, flags): the old flags; the Workbench screen stays public */
+static uint32_t i_PubScreenStatus(M68K *c) { (void)c; return 0; }
+
 static uint32_t i_LockPubScreen(M68K *c) {
     char name[64] = "";
     if (c->a[0]) str_get(c->a[0], name, sizeof name);
@@ -882,6 +977,24 @@ static uint32_t i_UnlockPubScreen(M68K *c) {
     if (s && s->locks) s->locks--;
     return 0;
 }
+/* reopen the Workbench screen in the current preferences; 0 while other windows use it */
+int intuition_reopen_workbench(void) {
+    NScreen *s = workbench_screen(0);
+    if (!s) return 1;
+    if (s->wins || s->locks) return 0;
+    free_screen(s);
+    workbench_screen(1);
+    return 1;
+}
+
+/* ENV:Sys/screenmode.prefs was written (ScreenMode "Use" or "Save") */
+void intuition_screenmode_changed(void) {
+    extern int workbench_running(void);
+    extern void workbench_reset_screen(void);
+    if (workbench_running()) workbench_reset_screen();
+    else intuition_reopen_workbench();
+}
+
 static uint32_t i_OpenWorkBench(M68K *c) { (void)c; return workbench_screen(1)->scr; }
 static uint32_t i_CloseWorkBench(M68K *c) {
     (void)c;
@@ -981,6 +1094,7 @@ static uint32_t i_DisplayAlert(M68K *c) {
 
 static const NativeEntry intui_natives[] = {
     { "OpenScreen", i_OpenScreen }, { "OpenScreenTagList", i_OpenScreenTagList }, { "CloseScreen", i_CloseScreen },
+    { "QueryOverscan", i_QueryOverscan },
     { "OpenWindow", i_OpenWindow }, { "OpenWindowTagList", i_OpenWindowTagList }, { "CloseWindow", i_CloseWindow },
     { "ModifyIDCMP", i_ModifyIDCMP },
     { "WindowToFront", i_WindowToFront }, { "WindowToBack", i_WindowToBack }, { "ActivateWindow", i_ActivateWindow },
@@ -990,7 +1104,7 @@ static const NativeEntry intui_natives[] = {
     { "ReportMouse", i_ReportMouse }, { "ViewPortAddress", i_ViewPortAddress }, { "ViewAddress", i_ViewAddress },
     { "ScrollWindowRaster", i_ScrollWindowRaster },
     { "LockPubScreen", i_LockPubScreen }, { "UnlockPubScreen", i_UnlockPubScreen },
-    { "OpenWorkBench", i_OpenWorkBench }, { "CloseWorkBench", i_CloseWorkBench },
+    { "OpenWorkBench", i_OpenWorkBench }, { "PubScreenStatus", i_PubScreenStatus }, { "CloseWorkBench", i_CloseWorkBench },
     { "GetScreenData", i_GetScreenData }, { "GetDefaultPubScreen", i_GetDefaultPubScreen },
     { "ScreenToFront", i_ScreenToFront }, { "ScreenToBack", i_nop }, { "ScreenDepth", i_nop },
     { "WBenchToFront", i_nop }, { "WBenchToBack", i_nop }, { "MoveScreen", i_nop },
@@ -1037,7 +1151,7 @@ int amiga_display_render(int id, uint32_t *out, int ow, int oh) {
     while (s && s->id != id) s = s->next;
     if (!s) { pthread_mutex_unlock(&disp_lock); return 0; }
     BM b;
-    bm_load(s->scr + Screen_BitMap, &b);
+    bm_load(s->custom_bm ? s->custom_bm : s->scr + Screen_BitMap, &b);
     blit_planar(out, ow, oh, &b, 0, 0, s->w, s->h, s->pal);
     /* windows back to front */
     NWindow *stack[256];
@@ -1047,6 +1161,11 @@ int amiga_display_render(int id, uint32_t *out, int ow, int oh) {
         NWindow *w = stack[i];
         BM wb;
         if (bm_load(w->bm, &wb)) blit_planar(out, ow, oh, &wb, w->x, w->y, w->w, w->h, s->pal);
+        if (w->ibm && bm_load(w->ibm, &wb)) {
+            int bl = (int8_t)rd8(w->win + Window_BorderLeft), bt = (int8_t)rd8(w->win + Window_BorderTop);
+            int br = (int8_t)rd8(w->win + Window_BorderRight), bb = (int8_t)rd8(w->win + Window_BorderBottom);
+            blit_planar(out, ow, oh, &wb, w->x + bl, w->y + bt, w->w - bl - br, w->h - bt - bb, s->pal);
+        }
     }
     /* menu overlay */
     for (int y = 0; y < s->h && y < oh; y++)

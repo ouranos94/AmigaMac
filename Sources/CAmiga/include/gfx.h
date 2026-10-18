@@ -34,6 +34,7 @@ void rp_fill(uint32_t rp, int x0, int y0, int x1, int y1, int pen, int complemen
 int rp_text_length(uint32_t rp, const char *s, int n);
 uint32_t gfx_default_font(void);
 uint32_t gfx_open_font(const char *name, int ysize);
+uint32_t font_in_memory(const char *name, int ysize, int exact);   /* diskfont.c */
 
 /* palettes: 32-bit 0x00RRGGBB per pen, owned by intuition's screens */
 uint32_t *gfx_palette_of_vp(uint32_t viewport);   /* provided by intuition.c */

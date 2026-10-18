@@ -7,8 +7,9 @@ APP=build/AmigaMac.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/System"
 cp .build/release/AmigaMac "$APP/Contents/MacOS/AmigaMac"
-# system template: everything in System/ except the RAM disk
-( cd System && find . -path ./.ram -prune -o -type f -print | cpio -pdm "../$APP/Contents/Resources/System" 2>/dev/null )
+# system template: AmigaMac's own files in System/, not what .gitignore leaves out
+# (the RAM disk, Work/ and third-party software installed locally)
+git -c core.quotePath=false ls-files --cached --others --exclude-standard -- System | cpio -pdm "$APP/Contents/Resources" 2>/dev/null
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

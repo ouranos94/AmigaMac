@@ -43,7 +43,8 @@ void sched_start(void);
 void sched_block(void);             /* current task leaves TS_RUN (state set by caller) */
 void sched_wake(uint32_t task);     /* waiting task whose signals arrived -> ready */
 void sched_signal(uint32_t task, uint32_t sigs);   /* exec Signal() */
-void sched_preempt_point(void);     /* called by running code: quantum / higher priority */
+void sched_preempt_point(void);
+void sched_timeslice(void);     /* called by running code: quantum / higher priority */
 void sched_exit(void) __attribute__((noreturn));   /* current task ends */
 void sched_kill(uint32_t task);     /* RemTask of another task */
 int sched_forbidden(void);

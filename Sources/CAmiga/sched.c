@@ -167,6 +167,8 @@ static void preempt(int quantum) {
 }
 
 void sched_preempt_point(void) { preempt(0); }
+/* let ready tasks of the same priority run first (a time slice ending) */
+void sched_timeslice(void) { preempt(1); }
 
 void sched_run_cpu(M68K *c) {
     for (;;) {
@@ -220,6 +222,8 @@ NTask *sched_add(uint32_t task, void (*native)(void *), void *arg, uint32_t init
     cpu68k_init(&n->cpu, CPU_68020);
     n->cpu.aline = aline_handler;
     n->cpu.exception = task_exception;
+    /* a supervisor stack: Supervisor(), SuperState() and exceptions run on it */
+    n->cpu.ssp = exec_allocmem(8192, MEMF_PUBLIC | MEMF_CLEAR) + 8192;
     pthread_cond_init(&n->cond, 0);
     n->next = tasks;
     tasks = n;

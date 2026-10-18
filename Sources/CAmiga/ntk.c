@@ -108,17 +108,7 @@ void ntk_set_gattr(M68K *c, Arena *A, uint32_t g, uint32_t win, uint32_t tag, ui
 }
 
 /* UTF-8 (host names, C literals) to the Latin-1 the Amiga side uses */
-void to_latin1(const char *in, char *out, int max) {
-    int k = 0;
-    for (const unsigned char *p = (const unsigned char *)in; *p && k < max - 1; p++) {
-        if ((*p == 0xC2 || *p == 0xC3) && (p[1] & 0xC0) == 0x80) { out[k++] = (char)((*p == 0xC3 ? 0x40 : 0) + p[1]); p++; }
-        else if (*p >= 0xC4 && *p < 0xF8) {                     /* outside Latin-1 */
-            out[k++] = '?';
-            while ((p[1] & 0xC0) == 0x80) p++;
-        } else out[k++] = (char)*p;
-    }
-    out[k] = 0;
-}
+void to_latin1(const char *in, char *out, int max) { dos_name_to_amiga(in, out, max); }
 
 /* a string in 68k memory, converted from UTF-8 */
 uint32_t ar_text(Arena *a, const char *utf8) {

@@ -16,6 +16,8 @@ typedef struct {
     void (*screen_closed)(int id);
     void (*beep)(void);
     void (*open_file)(const char *host_path);   /* open with the macOS application */
+    int (*clipboard_get)(char *utf8, int max);  /* the Mac's text clipboard, -1 if none */
+    void (*clipboard_set)(const char *utf8, int len);
 } AmigaHost;
 /* input goes the other way: amiga_console_input() / amiga_console_break()
    (sched.h), callable from any host thread */
@@ -86,6 +88,8 @@ void os_start(const char **commands, int ncommands, int interactive);  /* first 
 void exec_init(void);
 uint32_t exec_create_process(const char *name, uint32_t stacksize);
 void dos_init(const char *sysdir);
+extern uint32_t dos_handler_port;
+void dos_packet(uint32_t dp);
 
 /* run a 68k program as the CLI process; returns its D0 */
 int run_command(const char *path, const char *args, int *found);
@@ -105,6 +109,8 @@ void dos_write_handle(uint32_t bfh, const char *s, int len);
 int dos_read_line(uint32_t bfh, char *buf, int max);       /* -1 at end of file */
 void dos_close_handle(uint32_t bfh);
 uint32_t dos_create_cli(const char *name, void (*body)(void *), void *arg);
+uint32_t dos_create_cli_io(const char *name, void (*body)(void *), void *arg, uint32_t in, uint32_t out);
+int dos_open_console(M68K *c, const char *spec, uint32_t *in, uint32_t *out);
 const char *dos_assign_path(const char *name);
 void dos_assign(const char *name, const char *path);
 int dos_assign_count(void);
@@ -114,6 +120,11 @@ uint32_t dos_lock(const char *apath);
 void dos_unlock(uint32_t bl);
 const char *dos_lock_host_path(uint32_t bl);
 void dos_amiga_name(const char *hp, char *out, int max);
+void dos_name_to_amiga(const char *utf8, char *latin1, int max);
+uint32_t dos_protection(const char *host_path);           /* Amiga protection bits */
+void dos_set_protection(const char *host_path, uint32_t prot);
+int shell_run_script(const char *host_path, int argc, char argv[][512]);
+int shell_run_script_args(const char *host_path, const char *args);
 
 /* native shell */
 void shell_init(void);
@@ -127,6 +138,15 @@ uint32_t exec_waitport(uint32_t port);
 void exec_reply_msg(uint32_t msg);
 void exec_remove_task(uint32_t task);
 void timer_init(void);
+void math_init(void);
+void locale_init(void);
+void diskfont_init(void);
+void iffparse_init(void);
+int input_buttons(void);
+void clipboard_init(void);
+void keyboard_init(void);
+void inputdevice_init(void);
+void rexxsyslib_init(void);
 uint32_t timer_systime_secs(void);
 uint32_t exec_allocmem(uint32_t size, uint32_t flags);
 void exec_freemem(uint32_t addr, uint32_t size);

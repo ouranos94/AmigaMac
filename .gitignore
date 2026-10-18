@@ -4,3 +4,10 @@ tools/cpucheck
 System/.ram/
 build/
 .DS_Store
+System/Work/
+# logiciels tiers installés localement
+System/Libs/dopus.library
+System/C/DOpusRT
+System/S/User-Startup
+System/Libs/iff.library
+System/C/LhA

@@ -57,6 +57,27 @@ private let hostScreenClosed: @convention(c) (Int32) -> Void = { id in
 
 private let hostBeep: @convention(c) () -> Void = { DispatchQueue.main.async { NSSound.beep() } }
 
+// the Amiga clipboard (unit 0, text) is the Mac pasteboard
+private let hostClipGet: @convention(c) (UnsafeMutablePointer<CChar>?, Int32) -> Int32 = { buf, max in
+    guard let buf = buf else { return -1 }
+    var text: String?
+    if Thread.isMainThread { text = NSPasteboard.general.string(forType: .string) }
+    else { DispatchQueue.main.sync { text = NSPasteboard.general.string(forType: .string) } }
+    guard let t = text else { return -1 }
+    let bytes = Array(t.utf8.prefix(Int(max) - 1))
+    for (i, b) in bytes.enumerated() { buf[i] = CChar(bitPattern: b) }
+    buf[bytes.count] = 0
+    return Int32(bytes.count)
+}
+private let hostClipSet: @convention(c) (UnsafePointer<CChar>?, Int32) -> Void = { s, _ in
+    guard let s = s else { return }
+    let text = String(cString: s)
+    DispatchQueue.main.async {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
 // the Workbench opens host files it has no Amiga tool for with their macOS application
 private let hostOpenFile: @convention(c) (UnsafePointer<CChar>?) -> Void = { path in
     guard let path = path else { return }
@@ -155,7 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let frame = NSRect(x: 0, y: 0, width: 860, height: 520)
         window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "AmigaShell"
+        window.title = "AmigaShell — démarrage et journal"
+        window.isReleasedWhenClosed = false
         window.center()
         let scroll = NSScrollView(frame: frame)
         scroll.hasVerticalScroller = true
@@ -167,11 +189,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scroll.documentView = view
         scroll.backgroundColor = ShellView.paper
         window.contentView = scroll
-        window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(view)
         Console.shared.view = view
+        // as on the Amiga, the boot Shell has no window of its own: the Workbench
+        // screen is what shows; the Fenêtre menu brings this one up when wanted
         startAmiga()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if ScreenWindowController.open.isEmpty { self.showShell(nil) }   /* nothing else to see */
+        }
     }
+
+    @objc func showShell(_ sender: Any?) {
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func newShell(_ sender: Any?) { Console.shared.submit("NEWSHELL") }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
 
@@ -184,6 +217,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.screen_closed = hostScreenClosed
         host.beep = hostBeep
         host.open_file = hostOpenFile
+        host.clipboard_get = hostClipGet
+        host.clipboard_set = hostClipSet
         os_boot(sys)
         Console.shared.write("AmigaMac — AmigaOS réécrit nativement pour macOS\n" +
                              "Tapez HELP pour la liste des commandes.\n\n")
@@ -221,6 +256,15 @@ func buildMenu() -> NSMenu {
     edit.addItem(withTitle: "Coller", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     edit.addItem(withTitle: "Tout sélectionner", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editItem.submenu = edit
+    let winItem = NSMenuItem()
+    main.addItem(winItem)
+    let win = NSMenu(title: "Fenêtre")
+    win.addItem(withTitle: "Nouveau Shell", action: #selector(AppDelegate.newShell(_:)), keyEquivalent: "n")
+    win.addItem(withTitle: "Shell de démarrage et journal", action: #selector(AppDelegate.showShell(_:)), keyEquivalent: "l")
+    win.addItem(NSMenuItem.separator())
+    win.addItem(withTitle: "Réduire", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+    winItem.submenu = win
+    app.windowsMenu = win
     return main
 }
 

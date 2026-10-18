@@ -256,7 +256,9 @@ static void read_drawer(AslReq *a, EntList *l, const char *drawer, const char *p
                 if (a->reject && parsed_match(a->reject, e->d_name)) continue;
                 if (pattern[0] && !dos_match_pattern(pattern, e->d_name, 1)) continue;
             }
-            ents_add(l, e->d_name, dir);
+            char l1[256];
+            to_latin1(e->d_name, l1, sizeof l1);
+            ents_add(l, l1, dir);
         }
         if (d) closedir(d);
     }

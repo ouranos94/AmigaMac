@@ -4,6 +4,7 @@
  */
 #include "os.h"
 #include "intui.h"
+#include "console.h"
 #include "font8_extern.h"
 #define CPU (&sched_current()->cpu)
 #define GTYP_CUSTOM 5
@@ -90,16 +91,35 @@ int itext_length(uint32_t it) {
 
 /* ---- gadgets ----------------------------------------------------------------- */
 
+/* ---- old-style requesters (Request/EndRequest) -----------------------------------
+ * Requester: OlderRequest 0, LeftEdge 4, TopEdge 6, Width 8, Height 10, RelLeft 12,
+ * RelTop 14, ReqGadget 16, ReqBorder 20, ReqText 24, Flags 28, BackFill 30, RWindow 72 */
+#define RQ_GADGET 16
+#define GTYP_REQGADGET 0x1000
+
+/* the active requester whose gadget g is, or 0 */
+static uint32_t req_of_gadget(NWindow *w, uint32_t g) {
+    for (uint32_t r = rd32(w->win + Window_FirstRequest); r; r = rd32(r))
+        for (uint32_t q = rd32(r + RQ_GADGET); q; q = rd32(q + Gadget_NextGadget))
+            if (q == g) return r;
+    return 0;
+}
+
 void gadget_box(NWindow *w, uint32_t g, int *x, int *y, int *gw, int *gh) {
     uint32_t fl = rd16(g + Gadget_Flags);
-    *x = (int16_t)rd16(g + Gadget_LeftEdge);
-    *y = (int16_t)rd16(g + Gadget_LeftEdge + 2);
+    int bx = 0, by = 0, bw = w->w, bh = w->h;
+    if (rd16(g + Gadget_GadgetType) & GTYP_REQGADGET) {
+        uint32_t r = req_of_gadget(w, g);
+        if (r) { bx = (int16_t)rd16(r + 4); by = (int16_t)rd16(r + 6); bw = (int16_t)rd16(r + 8); bh = (int16_t)rd16(r + 10); }
+    }
+    *x = bx + (int16_t)rd16(g + Gadget_LeftEdge);
+    *y = by + (int16_t)rd16(g + Gadget_LeftEdge + 2);
     *gw = (int16_t)rd16(g + Gadget_Width);
     *gh = (int16_t)rd16(g + Gadget_Width + 2);
-    if (fl & GFLG_RELRIGHT) *x += w->w - 1;
-    if (fl & GFLG_RELBOTTOM) *y += w->h - 1;
-    if (fl & GFLG_RELWIDTH) *gw += w->w;
-    if (fl & GFLG_RELHEIGHT) *gh += w->h;
+    if (fl & GFLG_RELRIGHT) *x += bw - 1;
+    if (fl & GFLG_RELBOTTOM) *y += bh - 1;
+    if (fl & GFLG_RELWIDTH) *gw += bw;
+    if (fl & GFLG_RELHEIGHT) *gh += bh;
 }
 
 static void ghost(NWindow *w, int x, int y, int gw, int gh) {
@@ -235,7 +255,8 @@ void gadget_render_all(NWindow *w, uint32_t g, int count) {
 }
 
 static uint32_t gadget_at(NWindow *w, int lx, int ly) {
-    for (uint32_t g = rd32(w->win + Window_FirstGadget); g; g = rd32(g + Gadget_NextGadget)) {
+    uint32_t req = rd32(w->win + Window_FirstRequest);
+    for (uint32_t g = req ? rd32(req + RQ_GADGET) : rd32(w->win + Window_FirstGadget); g; g = rd32(g + Gadget_NextGadget)) {
         if (rd16(g + Gadget_GadgetType) & GTYP_SYSGADGET) continue;
         int x, y, gw, gh;
         gadget_box(w, g, &x, &y, &gw, &gh);
@@ -516,6 +537,9 @@ static uint32_t drag_gad;
 static int drag_dx, drag_dy, drag_inside;
 static int qualifier;
 
+/* mouse buttons held: bit 0 left, bit 1 right (for programs that poll the hardware) */
+int input_buttons(void) { return ((qualifier & 0x4000) ? 1 : 0) | ((qualifier & 0x2000) ? 2 : 0); }
+
 static NScreen *screen_by_id(int id) {
     for (NScreen *s = screens; s; s = s->next) if (s->id == id) return s;
     return 0;
@@ -615,6 +639,7 @@ static void handle_button(NScreen *s, int x, int y, int code) {
         int cw = (fl & WFLG_CLOSEGADGET) ? 20 : 0, dw = (fl & WFLG_DEPTHGADGET) ? 24 : 0;
         uint32_t g = gadget_at(w, lx, ly);
         if (active_strgad && g != active_strgad) str_deactivate();
+        if (!g && rd32(w->win + Window_FirstRequest) && !(ly < bt && !(fl & WFLG_BORDERLESS))) { drag = DRAG_NONE; return; }
         drag_win = w;
         if (g && !(rd16(g + Gadget_Flags) & GFLG_DISABLED)) {
             int type = rd16(g + Gadget_GadgetType) & GTYP_GTYPEMASK, act = rd16(g + Gadget_Activation);
@@ -823,13 +848,29 @@ static void handle_move(NScreen *s, int x, int y) {
         send_idcmp(w, IDCMP_MOUSEMOVE, 0, (uint32_t)qualifier, 0, x - w->x, y - w->y);
 }
 
+/* the keyboard matrix keyboard.device reports: a bit per raw key held down */
+static uint8_t key_matrix[16];
+int input_qualifier(void) { return qualifier; }
+
+void input_key_matrix(uint8_t out[16]) {
+    memcpy(out, key_matrix, 16);
+    for (int i = 0; i < 8; i++)                                  /* modifiers: raw keys $60-$67 */
+        if (qualifier & (1 << i)) out[12] |= (uint8_t)(1 << i); else out[12] &= (uint8_t)~(1 << i);
+}
+
 static void handle_key(int raw, int ch, int qual) {
     qualifier = (qualifier & 0x7000) | (qual & 0xFF);
     int up = raw & 0x80;
+    if ((raw & 0x7F) < 0x60) {
+        if (up) key_matrix[(raw & 0x7F) >> 3] &= (uint8_t)~(1 << (raw & 7));
+        else key_matrix[raw >> 3] |= (uint8_t)(1 << (raw & 7));
+    }
     NWindow *w = active_win;
+    if (!up) keymap_learn(raw, ch, qual);
     if (!w) return;
     if (!up && active_strgad && active_strwin == w) { str_key(raw, ch); return; }
     if (!up && (qual & 0xC0) && ch && rd32(w->win + Window_MenuStrip) && menu_shortcut(w, ch)) return;
+    if (w->hook) w->hook(w, HOOK_KEY, raw, ch, qualifier);
     uint32_t idcmp = rd32(w->win + Window_IDCMPFlags);
     if (!up && ch && (idcmp & IDCMP_VANILLAKEY)) { send_idcmp(w, IDCMP_VANILLAKEY, (uint32_t)ch, (uint32_t)qualifier, 0, 0, 0); return; }
     if (idcmp & IDCMP_RAWKEY) send_idcmp(w, IDCMP_RAWKEY, (uint32_t)raw, (uint32_t)qualifier, 0, 0, 0);
@@ -853,6 +894,8 @@ void input_task_main(void *arg) {
         sched_input_read(&ev);
         uint32_t m;
         while ((m = list_remhead(ireply_port + MP_MSGLIST))) exec_freemem(m, 56);   /* replied IntuiMessages */
+        extern int input_handlers_filter(InputEv *ev);
+        if (!input_handlers_filter(&ev)) continue;              /* a program's input handler ate it */
         if (ev.type == IEV_TICK) { handle_tick(); continue; }
         if (ev.type == IEV_KEY) { handle_key(ev.code, ev.ch, ev.qual); continue; }
         NScreen *s = screen_by_id(ev.screen);
@@ -1100,6 +1143,70 @@ static uint32_t build_request(M68K *c, uint32_t refwin, const char *title, const
     return win;
 }
 
+/* InitRequester(req): cleared */
+static uint32_t i_InitRequester(M68K *c) { for (uint32_t i = 0; i < 112; i++) wr8(c->a[0] + i, 0); return 0; }
+
+typedef struct { uint32_t req; NWindow *w; int x, y, wd, ht; uint8_t *pens; } ReqSave;
+static ReqSave rsaves[16];
+
+/* Request(req, window): shown in the window, which then only answers its gadgets */
+static uint32_t i_Request(M68K *c) {
+    uint32_t req = c->a[0], win = c->a[1];
+    NWindow *w = nwin_of(win);
+    if (!req || !w) return 0;
+    uint16_t flags = (uint16_t)rd16(req + 28);
+    int wd = (int16_t)rd16(req + 8), ht = (int16_t)rd16(req + 10);
+    if (flags & 1) {                                             /* POINTREL: about the window's centre */
+        wr16(req + 4, (uint16_t)((w->w - wd) / 2 + (int16_t)rd16(req + 12)));
+        wr16(req + 6, (uint16_t)((w->h - ht) / 2 + (int16_t)rd16(req + 14)));
+    }
+    int x = (int16_t)rd16(req + 4), y = (int16_t)rd16(req + 6);
+    /* what is under it comes back at EndRequest */
+    ReqSave *sv = 0;
+    for (int i = 0; i < 16 && !sv; i++) if (!rsaves[i].req) sv = &rsaves[i];
+    BM b;
+    if (sv && wd > 0 && ht > 0 && bm_load(rd32(w->rp + RastPort_BitMap), &b)) {
+        sv->req = req; sv->w = w; sv->x = x; sv->y = y; sv->wd = wd; sv->ht = ht;
+        sv->pens = malloc((size_t)wd * ht);
+        for (int j = 0; j < ht; j++) for (int i = 0; i < wd; i++) sv->pens[j * wd + i] = (uint8_t)bm_read(&b, x + i, y + j);
+    }
+    wr32(req, rd32(win + Window_FirstRequest));                  /* OlderRequest */
+    wr32(win + Window_FirstRequest, req);
+    wr16(win + Window_ReqCount, rd16(win + Window_ReqCount) + 1);
+    wr32(req + 72, win);                                         /* RWindow */
+    wr16(req + 28, flags | 0x2000);                              /* REQACTIVE */
+    if (!(flags & 0x40) && wd > 0 && ht > 0) rp_fill(w->rp, x, y, x + wd - 1, y + ht - 1, rd8(req + 30), 0);   /* BackFill */
+    if (rd32(req + 20)) draw_border(w->rp, rd32(req + 20), x, y);
+    if (rd32(req + 24)) draw_itext(w->rp, rd32(req + 24), x, y);
+    for (uint32_t g = rd32(req + RQ_GADGET); g; g = rd32(g + Gadget_NextGadget)) render_gadget(w, g);
+    gfx_touch();
+    send_idcmp(w, 0x80 /* IDCMP_REQSET */, 0, (uint32_t)qualifier, req, 0, 0);
+    return DOSTRUE;
+}
+
+/* EndRequest(req, window) */
+static uint32_t i_EndRequest(M68K *c) {
+    uint32_t req = c->a[0], win = c->a[1];
+    NWindow *w = nwin_of(win);
+    if (!req || !w) return 0;
+    for (uint32_t prev = win + Window_FirstRequest, r = rd32(prev); r; prev = r, r = rd32(r))
+        if (r == req) { wr32(prev, rd32(r)); wr16(win + Window_ReqCount, rd16(win + Window_ReqCount) - 1); break; }
+    wr16(req + 28, rd16(req + 28) & ~0x2000u);
+    if (active_strgad && req_of_gadget(w, active_strgad) == 0 && (rd16(active_strgad + Gadget_GadgetType) & GTYP_REQGADGET)) str_deactivate();
+    BM b;
+    for (int i = 0; i < 16; i++) {
+        ReqSave *sv = &rsaves[i];
+        if (sv->req != req) continue;
+        if (sv->w == w && bm_load(rd32(w->rp + RastPort_BitMap), &b))
+            for (int j = 0; j < sv->ht; j++) for (int k = 0; k < sv->wd; k++) bm_pixel(&b, sv->x + k, sv->y + j, sv->pens[j * sv->wd + k], JAM1, 0xFF);
+        free(sv->pens);
+        memset(sv, 0, sizeof *sv);
+    }
+    gfx_touch();
+    send_idcmp(w, 0x1000 /* IDCMP_REQCLEAR */, 0, (uint32_t)qualifier, req, 0, 0);
+    return 0;
+}
+
 static void free_request(uint32_t win) {
     NWindow *w = nwin_of(win);
     if (!w) return;
@@ -1208,6 +1315,7 @@ const NativeEntry intui_input_natives[] = {
     { "ItemAddress", i_ItemAddress }, { "OnMenu", i_OnMenu }, { "OffMenu", i_OffMenu },
     { "EasyRequestArgs", i_EasyRequestArgs }, { "BuildEasyRequestArgs", i_BuildEasyRequestArgs },
     { "SysReqHandler", i_SysReqHandler }, { "FreeSysRequest", i_FreeSysRequest },
-    { "AutoRequest", i_AutoRequest }, { "BuildSysRequest", i_BuildSysRequest },
+    { "AutoRequest", i_AutoRequest }, { "InitRequester", i_InitRequester },
+    { "Request", i_Request }, { "EndRequest", i_EndRequest }, { "BuildSysRequest", i_BuildSysRequest },
     { 0, 0 }
 };

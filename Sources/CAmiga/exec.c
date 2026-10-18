@@ -8,6 +8,7 @@
 #include "sched.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 uint32_t SysBase;
 
@@ -122,11 +123,135 @@ static uint32_t f_FreeVecPooled(M68K *c) {
 
 /* ---- libraries ---------------------------------------------------------- */
 
+
+/* ---- libraries and devices on disk (what ramlib does) ------------------------------ */
+
+static void init_struct(uint32_t table, uint32_t mem, uint32_t size) {
+    for (uint32_t i = 0; i < size; i++) wr8(mem + i, 0);
+    uint32_t p = table, dst = mem;
+    for (int guard = 0; guard < 10000; guard++) {
+        uint32_t cmd = rd8(p);
+        if (!cmd) break;
+        int type = (int)(cmd >> 6), sz = (int)((cmd >> 4) & 3), cnt = (int)(cmd & 15) + 1;
+        if (type == 3) { dst = mem + (rd32(p) & 0xFFFFFF); p += 4; }
+        else if (type == 2) { dst = mem + rd8(p + 1); p += 2; }
+        else p++;
+        int esz = sz == 0 ? 4 : sz == 1 ? 2 : 1;
+        if (sz == 3) break;
+        if (esz > 1) p = (p + 1) & ~1u;
+        for (int i = 0; i < cnt; i++) {
+            uint32_t src = type == 1 ? p : p + (uint32_t)(i * esz);
+            if (esz == 4) wr32(dst, rd32(src)); else if (esz == 2) wr16(dst, rd16(src)); else wr8(dst, rd8(src));
+            dst += (uint32_t)esz;
+        }
+        p += type == 1 ? (uint32_t)esz : (uint32_t)(esz * cnt);
+        p = (p + 1) & ~1u;                                    /* commands start on a word */
+    }
+}
+static uint32_t f_InitStruct(M68K *c) { init_struct(c->a[1], c->a[2], c->d[0]); return 0; }
+
+static uint32_t make_library(M68K *c, uint32_t funcs, uint32_t data, uint32_t init, uint32_t size, uint32_t seglist) {
+    uint32_t n = 0, disp = 0;
+    if (rd16(funcs) == 0xFFFF) { disp = funcs; funcs += 2; while ((int16_t)rd16(funcs + 2 * n) != -1) n++; }
+    else while (rd32(funcs + 4 * n) != 0xFFFFFFFF) n++;
+    uint32_t neg = (n * 6 + 3) & ~3u;
+    uint32_t blk = exec_allocmem(neg + size, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!blk) return 0;
+    uint32_t lib = blk + neg;
+    uint32_t slot = lib - 6;
+    for (uint32_t i = 0; i < n; i++, slot -= 6) {
+        wr16(slot, 0x4EF9);
+        wr32(slot + 2, disp ? disp + (uint32_t)(int16_t)rd16(funcs + 2 * i) : rd32(funcs + 4 * i));
+    }
+    if (data) init_struct(data, lib, 0);
+    wr16(lib + LIB_NEGSIZE, neg);
+    wr16(lib + LIB_POSSIZE, size);
+    if (init) {
+        uint32_t d[8], a[8];
+        memcpy(d, c->d, sizeof d); memcpy(a, c->a, sizeof a);
+        c->d[0] = lib; c->a[0] = seglist; c->a[6] = SysBase;
+        cpu_call(c, init);
+        lib = c->d[0];
+        memcpy(c->d, d, sizeof d); memcpy(c->a, a, sizeof a);
+    }
+    return lib;
+}
+static uint32_t f_MakeLibrary(M68K *c) { return make_library(c, c->a[0], c->a[1], c->a[2], c->d[0], c->d[1]); }
+
+/* InitResident(resident, segList) */
+static uint32_t init_resident(M68K *c, uint32_t rt, uint32_t seglist) {
+    uint32_t flags = rd8(rt + 10), init = rd32(rt + 22), type = rd8(rt + 12);
+    if (!init) return 0;
+    if (flags & 0x80) {                                           /* RTF_AUTOINIT */
+        uint32_t lib = make_library(c, rd32(init + 4), rd32(init + 8), rd32(init + 12), rd32(init), seglist);
+        if (!lib) return 0;
+        if (type == NT_DEVICE) list_enqueue(SysBase + EB_DEVICELIST, lib);
+        else if (type == NT_LIBRARY) lib_add(lib);
+        return lib;
+    }
+    uint32_t d[8], a[8];
+    memcpy(d, c->d, sizeof d); memcpy(a, c->a, sizeof a);
+    c->d[0] = 0; c->a[0] = seglist; c->a[6] = SysBase;
+    cpu_call(c, init);
+    uint32_t r = c->d[0];
+    memcpy(c->d, d, sizeof d); memcpy(c->a, a, sizeof a);
+    return r;
+}
+static uint32_t f_InitResident(M68K *c) { return init_resident(c, c->a[1], c->d[1]); }
+
+/* the RomTag of a loaded file: RTC_MATCHWORD followed by a pointer to itself */
+static uint32_t find_romtag(uint32_t seglist) {
+    for (uint32_t seg = seglist; seg; seg = rd32(BADDR(seg))) {
+        uint32_t start = BADDR(seg) + 4, size = rd32(BADDR(seg) - 4);
+        if (size < 8) continue;
+        for (uint32_t a = start; a + 26 <= start + size - 8; a += 2)
+            if (rd16(a) == 0x4AFC && rd32(a + 2) == a) return a;
+    }
+    return 0;
+}
+
+/* a library or device not in memory: from LIBS: or DEVS: */
+static uint32_t load_from_disk(M68K *c, const char *name, int device) {
+    char path[300], hp[1024];
+    if (strchr(name, ':') || strchr(name, '/')) snprintf(path, sizeof path, "%s", name);
+    else snprintf(path, sizeof path, "%s:%s", device ? "DEVS" : "LIBS", name);
+    if (!dos_resolve(path, hp, sizeof hp)) return 0;
+    struct stat st;
+    if (stat(hp, &st) || S_ISDIR(st.st_mode)) {
+        if (strchr(name, ':') || strchr(name, '/')) return 0;
+        /* also next to the program, as many do */
+        snprintf(path, sizeof path, "PROGDIR:%s%s", device ? "Devs/" : "Libs/", name);
+        if (!dos_resolve(path, hp, sizeof hp) || stat(hp, &st)) return 0;
+    }
+    uint32_t seg = dos_loadseg(hp);
+    if (!seg) return 0;
+    uint32_t rt = find_romtag(seg);
+    if (!rt) { os_log("%s : pas de RomTag", path); dos_unloadseg(seg); return 0; }
+    uint32_t base = init_resident(c, rt, seg);
+    if (!base) { dos_unloadseg(seg); return 0; }
+    os_log("%s chargé depuis %s", name, path);
+    return base;
+}
+
+/* a 68k library's own Open: through its vector (native ones answer directly) */
+static uint32_t lib_open_vector(M68K *c, uint32_t lib, uint32_t version) {
+    if (rd16(lib - 6) != 0x4EF9) return lib;
+    uint32_t d[8], a[8];
+    memcpy(d, c->d, sizeof d); memcpy(a, c->a, sizeof a);
+    c->d[0] = version; c->a[6] = lib;
+    cpu_call(c, lib - 6);
+    uint32_t r = c->d[0];
+    memcpy(c->d, d, sizeof d); memcpy(c->a, a, sizeof a);
+    return r;
+}
+
 uint32_t exec_openlibrary(const char *name, uint32_t version) {
     /* exec searches by node name; strip any path like "libs:foo.library" */
     const char *base = strrchr(name, '/');
     base = base ? base + 1 : (strchr(name, ':') ? strchr(name, ':') + 1 : name);
     uint32_t lib = list_findname(SysBase + EB_LIBLIST, base);
+    NTask *me = sched_current();
+    if (!lib && me) lib = load_from_disk(&me->cpu, name, 0);
     if (!lib) {
         os_log("OpenLibrary(\"%s\", %u) : bibliothèque absente", name, version);
         return 0;
@@ -135,6 +260,7 @@ uint32_t exec_openlibrary(const char *name, uint32_t version) {
         os_log("OpenLibrary(\"%s\", %u) : version %u seulement", name, version, rd16(lib + LIB_VERSION));
         return 0;
     }
+    if (rd16(lib - 6) == 0x4EF9 && me) return lib_open_vector(&me->cpu, lib, version);
     wr16(lib + LIB_OPENCNT, rd16(lib + LIB_OPENCNT) + 1);
     return lib;
 }
@@ -151,7 +277,16 @@ static uint32_t f_OldOpenLibrary(M68K *c) {
 }
 static uint32_t f_CloseLibrary(M68K *c) {
     uint32_t lib = c->a[1];
-    if (lib && rd16(lib + LIB_OPENCNT)) wr16(lib + LIB_OPENCNT, rd16(lib + LIB_OPENCNT) - 1);
+    if (!lib) return 0;
+    if (rd16(lib - 12) == 0x4EF9) {                            /* a 68k library: its Close */
+        uint32_t d[8], a[8];
+        memcpy(d, c->d, sizeof d); memcpy(a, c->a, sizeof a);
+        c->a[6] = lib;
+        cpu_call(c, lib - 12);
+        memcpy(c->d, d, sizeof d); memcpy(c->a, a, sizeof a);
+        return 0;                                               /* (expunged seglists stay loaded) */
+    }
+    if (rd16(lib + LIB_OPENCNT)) wr16(lib + LIB_OPENCNT, rd16(lib + LIB_OPENCNT) - 1);
     return 0;
 }
 static uint32_t f_TaggedOpenLibrary(M68K *c) {
@@ -244,19 +379,20 @@ static uint32_t f_RemTask(M68K *c) {
     return 0;
 }
 
-static uint32_t f_Forbid(M68K *c) { (void)c; wr8(SysBase + EB_TDNESTCNT, rd8(SysBase + EB_TDNESTCNT) + 1); return 0; }
+/* Forbid/Permit/Disable/Enable touch no register on the Amiga: D0 comes back as it was */
+static uint32_t f_Forbid(M68K *c) { wr8(SysBase + EB_TDNESTCNT, rd8(SysBase + EB_TDNESTCNT) + 1); return c->d[0]; }
 static uint32_t f_Permit(M68K *c) {
     (void)c;
     wr8(SysBase + EB_TDNESTCNT, rd8(SysBase + EB_TDNESTCNT) - 1);
     if (sched_need_resched) sched_preempt_point();
-    return 0;
+    return c->d[0];
 }
-static uint32_t f_Disable(M68K *c) { (void)c; wr8(SysBase + EB_IDNESTCNT, rd8(SysBase + EB_IDNESTCNT) + 1); return 0; }
+static uint32_t f_Disable(M68K *c) { wr8(SysBase + EB_IDNESTCNT, rd8(SysBase + EB_IDNESTCNT) + 1); return c->d[0]; }
 static uint32_t f_Enable(M68K *c) {
     (void)c;
     wr8(SysBase + EB_IDNESTCNT, rd8(SysBase + EB_IDNESTCNT) - 1);
     if (sched_need_resched) sched_preempt_point();
-    return 0;
+    return c->d[0];
 }
 
 static uint32_t f_SetSignal(M68K *c) {
@@ -287,7 +423,18 @@ uint32_t exec_wait(uint32_t mask) {
     }
 }
 
-static uint32_t f_Wait(M68K *c) { return exec_wait(c->d[0]); }
+/* Wait(0) from a program sleeps for good: subtasks end that way and wait for
+   their parent's RemTask() */
+static uint32_t f_Wait(M68K *c) {
+    if (c->d[0]) return exec_wait(c->d[0]);
+    uint32_t t = current_task;
+    for (;;) {
+        wr32(t + TC_SIGWAIT, 0);
+        wr8(t + TC_STATE, TS_WAIT);
+        list_addtail(SysBase + EB_TASKWAIT, t);
+        sched_block();
+    }
+}
 
 static uint32_t f_AllocSignal(M68K *c) {
     uint32_t t = current_task, alloc = rd32(t + TC_SIGALLOC);
@@ -339,6 +486,7 @@ static uint32_t f_CreateMsgPort(M68K *c) {
     wr8(p + MP_SIGBIT, sig);
     wr32(p + MP_SIGTASK, current_task);
     list_new(p + MP_MSGLIST);
+    c->a[0] = p;                 /* the ROM leaves the port in A0 too, and some programs count on it */
     return p;
 }
 
@@ -352,6 +500,14 @@ static uint32_t f_DeleteMsgPort(M68K *c) {
 }
 
 static void put_msg(uint32_t port, uint32_t msg) {
+    if (port && port == dos_handler_port) {
+        /* a DOS packet for a file or lock: done now, then replied like a handler would */
+        uint32_t dp = rd32(msg + LN_NAME), rp = rd32(dp + 4);
+        dos_packet(dp);
+        wr32(dp + 4, port);
+        if (rp) { put_msg(rp, msg); wr8(msg + LN_TYPE, NT_REPLYMSG); }
+        return;
+    }
     wr8(msg + LN_TYPE, NT_MESSAGE);
     list_addtail(port + MP_MSGLIST, msg);
     switch (rd8(port + MP_FLAGS) & 3) {
@@ -506,6 +662,7 @@ static uint32_t f_OpenDevice(M68K *c) {
     str_get(c->a[0], name, sizeof name);
     uint32_t ior = c->a[1], unit = c->d[0], flags = c->d[1];
     uint32_t dev = list_findname(SysBase + EB_DEVICELIST, name);
+    if (!dev) dev = load_from_disk(c, name, 1);
     if (!dev) {
         os_log("OpenDevice(\"%s\") : périphérique absent", name);
         wr8(ior + IO_ERROR, (uint8_t)IOERR_OPENFAIL);
@@ -696,6 +853,24 @@ static uint32_t f_Supervisor(M68K *c) {
     c->pc = pc;
     return c->d[0];
 }
+/* StackSwap(newStack A0): struct StackSwapStruct { stk_Lower, stk_Upper, stk_Pointer }.
+   The JSR's return address moves to the new stack, so the RTS of the
+   jump table lands back in the caller with the new SP. */
+static uint32_t f_StackSwap(M68K *c) {
+    uint32_t sss = c->a[0], t = this_task();
+    uint32_t ret = rd32(c->a[7]), old_sp = c->a[7] + 4;
+    uint32_t nlo = rd32(sss), nhi = rd32(sss + 4), nsp = rd32(sss + 8);
+    if (t) {
+        wr32(sss, rd32(t + TC_SPLOWER));
+        wr32(sss + 4, rd32(t + TC_SPUPPER));
+        wr32(t + TC_SPLOWER, nlo);
+        wr32(t + TC_SPUPPER, nhi);
+    }
+    wr32(sss + 8, old_sp);
+    c->a[7] = nsp - 4;
+    wr32(c->a[7], ret);
+    return c->d[0];
+}
 static uint32_t f_Alert(M68K *c) {
     os_log("Alert($%08X) depuis $%06X", c->d[7], rd32(c->a[7]));
     return 0;
@@ -714,8 +889,44 @@ static uint32_t f_OpenResource(M68K *c) {
 }
 static uint32_t f_ColdReboot(M68K *c) { os_log("ColdReboot()"); c->stop = 2; return 0; }
 
+/* Allocate(memHeader, size) / Deallocate(memHeader, block, size): a program's own
+   memory region, MemHeader {node, mh_Attributes 14, mh_First 16, mh_Lower 20,
+   mh_Upper 24, mh_Free 28}, free MemChunks {mc_Next, mc_Bytes} in address order */
+static uint32_t f_Allocate(M68K *c) {
+    uint32_t mh = c->a[0], size = (c->d[0] + 7) & ~7u;
+    if (!size || size > rd32(mh + 28)) return 0;
+    for (uint32_t prev = mh + 16, mc = rd32(prev); mc; prev = mc, mc = rd32(mc)) {
+        uint32_t bytes = rd32(mc + 4);
+        if (bytes < size) continue;
+        if (bytes == size) wr32(prev, rd32(mc));
+        else {
+            uint32_t rest = mc + size;
+            wr32(rest, rd32(mc));
+            wr32(rest + 4, bytes - size);
+            wr32(prev, rest);
+        }
+        wr32(mh + 28, rd32(mh + 28) - size);
+        return mc;
+    }
+    return 0;
+}
+static uint32_t f_Deallocate(M68K *c) {
+    uint32_t mh = c->a[0], blk = c->a[1] & ~7u, size = (c->d[0] + (c->a[1] & 7) + 7) & ~7u;
+    if (!blk || !size) return 0;
+    uint32_t prev = mh + 16, mc = rd32(prev);
+    while (mc && mc < blk) { prev = mc; mc = rd32(mc); }
+    wr32(blk, mc);
+    wr32(blk + 4, size);
+    if (mc && blk + size == mc) { wr32(blk, rd32(mc)); wr32(blk + 4, size + rd32(mc + 4)); }   /* join the next */
+    if (prev != mh + 16 && prev + rd32(prev + 4) == blk) { wr32(prev, rd32(blk)); wr32(prev + 4, rd32(prev + 4) + rd32(blk + 4)); }
+    else wr32(prev, blk);
+    wr32(mh + 28, rd32(mh + 28) + size);
+    return 0;
+}
+
 static const NativeEntry exec_natives[] = {
     { "AllocMem", f_AllocMem }, { "FreeMem", f_FreeMem }, { "AllocVec", f_AllocVec },
+    { "Allocate", f_Allocate }, { "Deallocate", f_Deallocate },
     { "FreeVec", f_FreeVec }, { "AvailMem", f_AvailMem }, { "TypeOfMem", f_TypeOfMem },
     { "AllocEntry", f_AllocEntry }, { "FreeEntry", f_FreeEntry },
     { "CopyMem", f_CopyMem }, { "CopyMemQuick", f_CopyMem },
@@ -726,7 +937,8 @@ static const NativeEntry exec_natives[] = {
     { "CloseLibrary", f_CloseLibrary }, { "TaggedOpenLibrary", f_TaggedOpenLibrary },
     { "AddLibrary", f_AddLibrary }, { "RemLibrary", f_RemLibrary },
     { "SetFunction", f_SetFunction }, { "SumLibrary", f_SumLibrary },
-    { "MakeFunctions", f_MakeFunctions },
+    { "MakeFunctions", f_MakeFunctions }, { "MakeLibrary", f_MakeLibrary },
+    { "InitStruct", f_InitStruct }, { "InitResident", f_InitResident },
     { "FindTask", f_FindTask }, { "Forbid", f_Forbid }, { "Permit", f_Permit },
     { "Disable", f_Disable }, { "Enable", f_Enable },
     { "SetSignal", f_SetSignal }, { "Signal", f_Signal }, { "Wait", f_Wait },
@@ -753,7 +965,7 @@ static const NativeEntry exec_natives[] = {
     { "CacheClearU", f_CacheClearU }, { "CacheClearE", f_CacheClearE },
     { "CacheControl", f_CacheControl }, { "SuperState", f_SuperState },
     { "UserState", f_UserState }, { "Supervisor", f_Supervisor },
-    { "Alert", f_Alert }, { "Debug", f_Debug }, { "SetSR", f_SetSR }, { "GetCC", f_GetCC },
+    { "Alert", f_Alert }, { "StackSwap", f_StackSwap }, { "Debug", f_Debug }, { "SetSR", f_SetSR }, { "GetCC", f_GetCC },
     { "OpenResource", f_OpenResource }, { "OpenDevice", f_OpenDevice },
     { "CloseDevice", f_CloseDevice }, { "ColdReboot", f_ColdReboot },
     { 0, 0 }
@@ -766,7 +978,7 @@ void exec_init(void) {
                          "exec 40.1 (AmigaMac)");
     wr32(4, SysBase);
     wr16(SysBase + EB_SOFTVER, 1);
-    wr16(SysBase + EB_ATTNFLAGS, AFF_68010 | AFF_68020);
+    wr16(SysBase + EB_ATTNFLAGS, AFF_68010 | AFF_68020 | AFF_68881 | AFF_68882);
     wr8(SysBase + EB_VBLANKFREQ, 50);
     wr8(SysBase + EB_POWERFREQ, 50);
     wr32(SysBase + EB_ECLOCKFREQ, 709379);

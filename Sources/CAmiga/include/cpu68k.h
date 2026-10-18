@@ -36,6 +36,11 @@ struct M68K {
     uint16_t ir;            /* its opcode */
     int stop;               /* set to leave cpu68k_run() */
     uint64_t insns;         /* instructions executed */
+    int fpu;                /* a 68881/68882 is present */
+    double fp[8];           /* FP0-FP7 */
+    uint32_t fpcr, fpsr, fpiar;
+    uint32_t hist[32];      /* recent instruction addresses (cpu68k_trace) */
+    unsigned hidx;
 
     /* native hooks */
     void (*aline)(M68K *cpu, uint16_t opcode);  /* $Axxx trap, pc already past it */
@@ -45,6 +50,7 @@ struct M68K {
     void *user;
 };
 
+extern int cpu68k_trace;
 void cpu68k_init(M68K *cpu, int model);
 /* run until cpu->stop is set or max_insns executed; returns instructions run */
 uint64_t cpu68k_run(M68K *cpu, uint64_t max_insns);

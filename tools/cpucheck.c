@@ -12,7 +12,7 @@
 #define MSIZE (1u << 20)
 uint8_t *mem;
 uint32_t mem_size;
-void mem_fault(uint32_t a, int w, int s) { (void)a; (void)w; (void)s; }
+uint32_t mem_fault(uint32_t a, int w, int s) { (void)a; (void)w; (void)s; return 0; }
 
 static uint8_t mus[MSIZE], pristine[MSIZE];
 

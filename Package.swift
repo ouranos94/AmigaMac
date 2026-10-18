@@ -12,7 +12,8 @@ let package = Package(
         .target(
             name: "CAmiga",
             path: "Sources/CAmiga",
-            cSettings: [.unsafeFlags(["-O2", "-Wall", "-Wno-unused-function"])]
+            cSettings: [.unsafeFlags(["-O2", "-Wall", "-Wno-unused-function"])],
+            linkerSettings: [.linkedFramework("CoreFoundation"), .linkedFramework("AudioToolbox")]
         ),
         .executableTarget(
             name: "AmigaMac",

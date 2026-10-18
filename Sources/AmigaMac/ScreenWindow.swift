@@ -13,10 +13,15 @@ final class ScreenWindowController: NSObject, NSWindowDelegate {
         self.id = id
         var w: Int32 = 640, h: Int32 = 256, hires: Int32 = 1, lace: Int32 = 0
         amiga_display_size(id, &w, &h, &hires, &lace)
-        // pixel aspect: hires non-interlaced pixels are twice as tall as wide
-        let px: CGFloat = hires != 0 ? 1.5 : 3.0
-        let py: CGFloat = lace != 0 ? 1.5 : 3.0
-        let size = NSSize(width: CGFloat(w) * px, height: CGFloat(h) * py)
+        // pixel aspect: hires non-interlaced pixels are twice as tall as wide;
+        // hires 3 = the square-pixel AmigaMac modes
+        let px: CGFloat = [3.0, 1.5, 0.75, 1.0][Int(max(0, min(3, hires)))]
+        let py: CGFloat = hires == 3 ? 1.0 : (lace != 0 ? 1.5 : 3.0)
+        var size = NSSize(width: CGFloat(w) * px, height: CGFloat(h) * py)
+        if let vis = NSScreen.main?.visibleFrame {              // fit the Mac screen
+            let k = min(1, (vis.width * 0.95) / size.width, (vis.height * 0.92 - 28) / size.height)
+            size = NSSize(width: (size.width * k).rounded(), height: (size.height * k).rounded())
+        }
         view = ScreenView(frame: NSRect(origin: .zero, size: size), id: id, width: Int(w), height: Int(h))
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)

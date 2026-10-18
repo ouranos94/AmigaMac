@@ -140,6 +140,12 @@ static uint32_t root_dispatch(M68K *c, uint32_t cl, uint32_t obj, uint32_t msg) 
     return 0;
 }
 
+/* pointerclass: the object only stands for a pointer image (the Mac's pointer is used) */
+static uint32_t root_dispatch_ptr(M68K *c, uint32_t cl, uint32_t obj, uint32_t msg) {
+    if (rd32(msg) == OM_GET) { wr32(rd32(msg + 8), 0); return 1; }
+    return super_method(c, cl, obj, msg);
+}
+
 /* ---- notification (icclass behaviour, shared by gadgets) ------------------------ */
 
 static uint32_t clone_tags(uint32_t tags) {
@@ -1042,6 +1048,7 @@ void boopsi_init(void) {
     make_class("propgclass", gadget, PropInfo_SIZEOF + 12, prop_dispatch);
     make_class("strgclass", gadget, StringInfo_SIZEOF + 4, strg_dispatch);
     make_class("groupgclass", gadget, 0, group_dispatch);
+    make_class("pointerclass", root, 0, root_dispatch_ptr);
     uint32_t ic = make_class("icclass", root, 8, ic_dispatch);
     make_class("modelclass", ic, LH_SIZE + 2, model_dispatch);
     (void)public_classes;

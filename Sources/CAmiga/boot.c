@@ -4,6 +4,8 @@
 #include "sched.h"
 #include "gfx.h"
 #include "wb.h"
+#include "console.h"
+#include "audio.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,6 +19,16 @@ int os_boot(const char *sysdir) {
     exec_init();
     timer_init();
     utility_init();
+    math_init();
+    console_init();
+    locale_init();
+    diskfont_init();
+    iffparse_init();
+    audio_init();
+    clipboard_init();
+    keyboard_init();
+    inputdevice_init();
+    rexxsyslib_init();
     gfx_init();
     layers_init();
     intuition_init();
@@ -24,6 +36,7 @@ int os_boot(const char *sysdir) {
     icon_init();
     asl_init();
     workbench_init();
+    datatypes_init();
     char abs[1024];
     dos_init(realpath(sysdir, abs) ? abs : sysdir);
     shell_init();

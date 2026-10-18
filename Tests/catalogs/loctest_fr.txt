@@ -1,0 +1,3 @@
+# LocTest, French
+1 Bonjour, le monde !
+2 Il y a %ld fichiers dans %s.
