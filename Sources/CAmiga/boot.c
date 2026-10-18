@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MEM_SIZE (32u << 20)                 /* 32 MB of 68k address space */
+#define MEM_SIZE (256u << 20)                /* 256 MB of 68k address space (true-colour screens are big) */
 
 int os_boot(const char *sysdir) {
     mem_init(MEM_SIZE);
@@ -29,6 +29,7 @@ int os_boot(const char *sysdir) {
     keyboard_init();
     inputdevice_init();
     commodities_init();
+    cybergfx_init();
     rexxsyslib_init();
     gfx_init();
     layers_init();

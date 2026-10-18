@@ -28,9 +28,11 @@ enum { ID_LIST = 1, ID_WIDTH, ID_HEIGHT, ID_COLORS, ID_SAVE, ID_USE, ID_CANCEL }
 static struct Node nodes[MAXMODES];
 static char names[MAXMODES][DISPLAYNAMELEN + 1];
 static ULONG ids[MAXMODES];
-static UWORD widths[MAXMODES], heights[MAXMODES];
+static UWORD widths[MAXMODES], heights[MAXMODES], maxdepth[MAXMODES];
 static int nmodes;
-static STRPTR colors[] = { "2", "4", "8", "16", "32", "64", "128", "256", NULL };
+/* the colours a mode can show: palette depths 1-8, then true colour (16 and 24 bits) */
+static STRPTR colors[] = { "2", "4", "8", "16", "32", "64", "128", "256", "65536 (16 bits)", "16 M (24 bits)", NULL };
+static const UWORD depths[] = { 1, 2, 3, 4, 5, 6, 7, 8, 16, 24 };
 static const char version[] = "$VER: ScreenMode 45.1 (17.10.2026) AmigaMac";
 
 static void scan_modes(struct List *list)
@@ -47,6 +49,7 @@ static void scan_modes(struct List *list)
         ids[nmodes] = id;
         widths[nmodes] = di.Nominal.MaxX - di.Nominal.MinX + 1;
         heights[nmodes] = di.Nominal.MaxY - di.Nominal.MinY + 1;
+        maxdepth[nmodes] = di.MaxDepth;
         nodes[nmodes].ln_Name = names[nmodes];
         AddTail(list, &nodes[nmodes]);
         nmodes++;
@@ -113,7 +116,7 @@ int main(void)
     struct Window *win;
     APTR vi;
     ULONG cur_id = 0x50031000;                     /* the default: AmigaMac 1280x720 */
-    UWORD cur_depth = 8;
+    UWORD cur_depth = 24;
     int sel = 0, depth_idx, top, i, W = 400, H = 160, action = 0;
 
     if (!scr) return 20;
@@ -122,7 +125,8 @@ int main(void)
     if (!read_prefs("ENV:Sys/screenmode.prefs", &cur_id, &cur_depth))
         read_prefs("ENVARC:Sys/screenmode.prefs", &cur_id, &cur_depth);
     for (i = 0; i < nmodes; i++) if (ids[i] == cur_id) sel = i;
-    depth_idx = cur_depth >= 1 && cur_depth <= 8 ? cur_depth - 1 : 2;
+    depth_idx = 7;
+    for (i = 0; i < 10; i++) if (depths[i] == cur_depth) depth_idx = i;
 
     top = scr->WBorTop + scr->Font->ta_YSize + 1;
     g = CreateContext(&glist);
@@ -140,7 +144,8 @@ int main(void)
     gw = g = CreateGadget(NUMBER_KIND, g, &ng, GTNM_Number, nmodes ? widths[sel] : 0, GTNM_Border, TRUE, TAG_DONE);
     ng.ng_TopEdge += 16; ng.ng_GadgetText = "Hauteur"; ng.ng_GadgetID = ID_HEIGHT;
     gh = g = CreateGadget(NUMBER_KIND, g, &ng, GTNM_Number, nmodes ? heights[sel] : 0, GTNM_Border, TRUE, TAG_DONE);
-    ng.ng_TopEdge += 20; ng.ng_Height = 14; ng.ng_GadgetText = "Couleurs"; ng.ng_GadgetID = ID_COLORS;
+    ng.ng_TopEdge += 36; ng.ng_Height = 14; ng.ng_Width = 140; ng.ng_LeftEdge = 248; ng.ng_GadgetText = "Couleurs"; ng.ng_GadgetID = ID_COLORS;
+    ng.ng_Flags = PLACETEXT_ABOVE;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, colors, GTCY_Active, depth_idx, TAG_DONE);
 
     ng.ng_TopEdge = top + H - top - 22; ng.ng_Width = 100; ng.ng_Height = 14; ng.ng_Flags = PLACETEXT_IN;
@@ -196,9 +201,10 @@ int main(void)
     FreeGadgets(glist);
     FreeVisualInfo(vi);
     if (action != ID_CANCEL && nmodes) {
-        if (action == ID_SAVE && !write_prefs("ENVARC:Sys", ids[sel], widths[sel], heights[sel], depth_idx + 1))
+        while (depth_idx > 0 && depths[depth_idx] > maxdepth[sel]) depth_idx--;   /* what the mode can show */
+        if (action == ID_SAVE && !write_prefs("ENVARC:Sys", ids[sel], widths[sel], heights[sel], depths[depth_idx]))
             PrintFault(IoErr(), "ScreenMode");
-        if (!write_prefs("ENV:Sys", ids[sel], widths[sel], heights[sel], depth_idx + 1))
+        if (!write_prefs("ENV:Sys", ids[sel], widths[sel], heights[sel], depths[depth_idx]))
             PrintFault(IoErr(), "ScreenMode");
     }
     return 0;

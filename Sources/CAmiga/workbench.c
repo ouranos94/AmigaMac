@@ -436,7 +436,7 @@ static void scroll_step(WBWin *w, int which) {
 
 /* ---- the backdrop picture (WBPattern prefs) -------------------------------------------- */
 
-static struct { int sid, w, h; uint8_t *pens; } bd = { -1, 0, 0, 0 };
+static struct { int sid, w, h; uint8_t *pens; uint32_t *rgb; } bd = { -1, 0, 0, 0, 0 };   /* pens, or colours on a true-colour screen */
 
 static uint32_t rbe32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static const uint8_t *iff_chunk(const uint8_t *b, size_t len, const char *id, uint32_t *size) {
@@ -503,7 +503,9 @@ static uint8_t *load_ilbm_pens(const char *apath, int *w, int *h, uint32_t pal[2
 /* the desktop's picture, composed at the screen's size in the screen's pens */
 static void backdrop_build(NScreen *s) {
     free(bd.pens);
+    free(bd.rgb);
     bd.pens = 0;
+    bd.rgb = 0;
     bd.sid = s->id;
     if (s->depth < 4) return;
     size_t len;
@@ -526,7 +528,9 @@ static void backdrop_build(NScreen *s) {
     int16_t map[256];
     for (int i = 0; i < 256; i++) map[i] = -1;
     bd.w = s->w; bd.h = s->h;
-    bd.pens = malloc((size_t)bd.w * bd.h);
+    int deep = s->depth > 8;
+    if (deep) bd.rgb = malloc(sizeof(uint32_t) * (size_t)bd.w * bd.h);
+    else bd.pens = malloc((size_t)bd.w * bd.h);
     int place = flags & 0x3000;
     for (int y = 0; y < bd.h; y++)
         for (int x = 0; x < bd.w; x++) {
@@ -535,6 +539,7 @@ static void backdrop_build(NScreen *s) {
             else if (place == 0x1000) { sx = x - (bd.w - W) / 2; sy = y - (bd.h - H) / 2; } /* centred */
             else { sx = x % W; sy = y % H; }                                              /* tiled */
             int v = sx >= 0 && sy >= 0 && sx < W && sy < H ? src[sy * W + sx] : -1;
+            if (deep) { bd.rgb[y * bd.w + x] = v < 0 || v >= ncol ? s->pal[desktop_pen(s)] : pal[v]; continue; }
             if (v < 0 || v >= ncol) { bd.pens[y * bd.w + x] = (uint8_t)desktop_pen(s); continue; }
             if (map[v] < 0) map[v] = (int16_t)screen_obtain_pen(s, pal[v]);
             bd.pens[y * bd.w + x] = (uint8_t)map[v];
@@ -548,19 +553,22 @@ static void redraw(WBWin *w) {
     if (iw <= 0 || ih <= 0) return;
     NScreen *s = wb.s;
     uint32_t bm = gfx_alloc_bitmap(iw, ih, s->depth, 1);
+    gfx_set_palette(bm, s->pal);
     wr32(w->rp + RastPort_BitMap, bm);
     rp_fill(w->rp, 0, 0, iw - 1, ih - 1, w->backdrop ? desktop_pen(s) : s->pens[BACKGROUNDPEN], 0);
     if (w->backdrop) {                                          /* the backdrop picture, if any */
         if (bd.sid != s->id) backdrop_build(s);
         BM tb;
         int ox = (int16_t)rd16(w->win + Window_LeftEdge) + bl, oy = (int16_t)rd16(w->win + Window_TopEdge) + bt;
-        if (bd.pens && bm_load(bm, &tb))
+        if ((bd.pens || bd.rgb) && bm_load(bm, &tb))
             for (int y = 0; y < ih; y++) {
                 int sy = oy + y;
                 if (sy < 0 || sy >= bd.h) continue;
                 for (int x = 0; x < iw; x++) {
                     int sx = ox + x;
-                    if (sx >= 0 && sx < bd.w) bm_pixel(&tb, x, y, bd.pens[sy * bd.w + sx], JAM1, 0xFF);
+                    if (sx < 0 || sx >= bd.w) continue;
+                    if (bd.rgb) bm_put_rgb(&tb, x, y, bd.rgb[sy * bd.w + sx]);
+                    else bm_pixel(&tb, x, y, bd.pens[sy * bd.w + sx], JAM1, 0xFF);
                 }
             }
     }

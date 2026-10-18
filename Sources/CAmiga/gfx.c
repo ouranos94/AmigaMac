@@ -17,13 +17,82 @@ static volatile uint32_t gfx_serial;            /* bumped by every drawing call 
 void gfx_touch(void) { gfx_serial++; }
 uint32_t gfx_changes(void) { return gfx_serial; }
 
-/* ---- BitMaps --------------------------------------------------------------- */
+/* ---- BitMaps --------------------------------------------------------------- *
+ * Planar BitMaps (up to 8 planes) as on the Amiga, and true-colour ones: 32-bit
+ * pixels (0xAARRGGBB, big-endian) in one block, as a graphics card's. A true-colour
+ * BitMap shows itself as 8 bits deep to the drawing code (pens 0-255, drawn
+ * through its palette); BitMap_Depth says 24 to programs. */
+
+typedef struct { uint32_t bm, data; int w, h; const uint32_t *pal; } Chunky;
+static Chunky chunkies[1024];
+static int nchunky;
+static const uint32_t *default_pal;
+static uint32_t grey_pal[256];
+
+void gfx_set_default_palette(const uint32_t *pal) { default_pal = pal; }
+
+static Chunky *chunky_of(uint32_t bm) {
+    for (int i = 0; i < nchunky; i++) if (chunkies[i].bm == bm) return &chunkies[i];
+    return 0;
+}
+int gfx_is_chunky(uint32_t bm) { return chunky_of(bm) != 0; }
+void gfx_set_palette(uint32_t bm, const uint32_t *pal) { Chunky *k = chunky_of(bm); if (k) k->pal = pal; }
+
+static const uint32_t *pal_or_default(const uint32_t *pal) {
+    if (pal) return pal;
+    if (default_pal) return default_pal;
+    if (!grey_pal[255]) for (int i = 0; i < 256; i++) grey_pal[i] = (uint32_t)i * 0x010101u;
+    return grey_pal;
+}
+
+uint32_t gfx_alloc_chunky(int w, int h, const uint32_t *pal) {
+    if (nchunky == 1024 || w <= 0 || h <= 0) return 0;
+    uint32_t data = exec_allocmem((uint32_t)(w * h * 4), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!data) return 0;
+    uint32_t bm = exec_allocmem(BitMap_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
+    wr16(bm + BitMap_BytesPerRow, (uint32_t)(w * 4));
+    wr16(bm + BitMap_Rows, (uint32_t)h);
+    wr8(bm + BitMap_Depth, 24);
+    wr32(bm + BitMap_Planes, data);
+    for (uint32_t i = 0; i < (uint32_t)(w * h); i++) wr8(data + 4 * i, 0xFF);   /* opaque */
+    chunkies[nchunky++] = (Chunky){ bm, data, w, h, pal };
+    return bm;
+}
+
+/* a BitMap structure that exists (a Screen's) made true colour, and back */
+int gfx_chunky_at(uint32_t bm, int w, int h, const uint32_t *pal) {
+    if (nchunky == 1024) return 0;
+    uint32_t data = exec_allocmem((uint32_t)(w * h * 4), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!data) return 0;
+    for (uint32_t i = 0; i < (uint32_t)(w * h); i++) wr8(data + 4 * i, 0xFF);
+    wr16(bm + BitMap_BytesPerRow, (uint32_t)(w * 4));
+    wr16(bm + BitMap_Rows, (uint32_t)h);
+    wr8(bm + BitMap_Depth, 24);
+    for (int i = 0; i < 8; i++) wr32(bm + BitMap_Planes + 4 * (uint32_t)i, i ? 0 : data);
+    chunkies[nchunky++] = (Chunky){ bm, data, w, h, pal };
+    return 1;
+}
+void gfx_chunky_release(uint32_t bm) {
+    Chunky *k = chunky_of(bm);
+    if (!k) return;
+    exec_freemem(k->data, (uint32_t)(k->w * k->h * 4));
+    *k = chunkies[--nchunky];
+}
 
 int bm_load(uint32_t bm, BM *b) {
     if (!bm) return 0;
     b->addr = bm;
+    Chunky *k = chunky_of(bm);
+    if (k) {
+        b->chunky = 1; b->data = k->data; b->pal = pal_or_default(k->pal);
+        b->bpr = k->w * 4; b->rows = k->h; b->width = k->w; b->depth = 8;
+        memset(b->planes, 0, sizeof b->planes);
+        return 1;
+    }
+    b->chunky = 0; b->data = 0; b->pal = 0;
     b->bpr = rd16(bm + BitMap_BytesPerRow);
     b->rows = rd16(bm + BitMap_Rows);
+    b->width = b->bpr * 8;
     b->depth = rd8(bm + BitMap_Depth);
     if (b->depth > 8) b->depth = 8;
     for (int i = 0; i < 8; i++) b->planes[i] = i < b->depth ? rd32(bm + BitMap_Planes + 4 * i) : 0;
@@ -33,8 +102,44 @@ int bm_load(uint32_t bm, BM *b) {
 /* plane pointers 0 and -1 mean "all zeros" / "all ones", never written */
 static inline int plane_ok(uint32_t p) { return p && p != 0xFFFFFFFF; }
 
+static inline uint32_t *px32(BM *b, int x, int y) {
+    uint32_t a = b->data + (uint32_t)((y * b->width + x) * 4);
+    return mem_ok(a, 4) ? (uint32_t *)(mem + a) : 0;
+}
+static inline uint32_t get32(const uint32_t *p) {
+    const uint8_t *q = (const uint8_t *)p;
+    return (uint32_t)q[1] << 16 | (uint32_t)q[2] << 8 | q[3];
+}
+static inline void put32(uint32_t *p, uint32_t rgb) {
+    uint8_t *q = (uint8_t *)p;
+    q[0] = 0xFF; q[1] = (uint8_t)(rgb >> 16); q[2] = (uint8_t)(rgb >> 8); q[3] = (uint8_t)rgb;
+}
+
+/* the pen whose colour is nearest (for reading a true-colour BitMap as pens) */
+static int nearest_pen(const uint32_t *pal, uint32_t rgb) {
+    static const uint32_t *lpal;
+    static uint32_t lrgb = 0xFFFFFFFF;
+    static int lpen;
+    if (pal == lpal && rgb == lrgb) return lpen;
+    int best = 0;
+    long bd = 1L << 30;
+    for (int i = 0; i < 256; i++) {
+        long dr = (long)(pal[i] >> 16 & 0xFF) - (rgb >> 16 & 0xFF), dg = (long)(pal[i] >> 8 & 0xFF) - (rgb >> 8 & 0xFF), db = (long)(pal[i] & 0xFF) - (rgb & 0xFF);
+        long d = dr * dr + dg * dg + db * db;
+        if (d < bd) { bd = d; best = i; if (!d) break; }
+    }
+    lpal = pal; lrgb = rgb; lpen = best;
+    return best;
+}
+
 void bm_pixel(BM *b, int x, int y, int pen, int mode, int mask) {
-    if (x < 0 || y < 0 || x >= b->bpr * 8 || y >= b->rows) return;
+    if (x < 0 || y < 0 || x >= b->width || y >= b->rows) return;
+    if (b->chunky) {
+        uint32_t *p = px32(b, x, y);
+        if (!p || !(mask & 0xFF)) return;
+        put32(p, (mode & COMPLEMENT) ? get32(p) ^ 0xFFFFFF : b->pal[pen & 0xFF]);
+        return;
+    }
     uint32_t off = (uint32_t)(y * b->bpr + (x >> 3));
     uint8_t bit = (uint8_t)(0x80 >> (x & 7));
     for (int p = 0; p < b->depth; p++) {
@@ -48,7 +153,8 @@ void bm_pixel(BM *b, int x, int y, int pen, int mode, int mask) {
 }
 
 int bm_read(BM *b, int x, int y) {
-    if (x < 0 || y < 0 || x >= b->bpr * 8 || y >= b->rows) return 0;
+    if (x < 0 || y < 0 || x >= b->width || y >= b->rows) return 0;
+    if (b->chunky) { uint32_t *p = px32(b, x, y); return p ? nearest_pen(b->pal, get32(p)) : 0; }
     uint32_t off = (uint32_t)(y * b->bpr + (x >> 3));
     int pen = 0;
     for (int p = 0; p < b->depth; p++) {
@@ -59,14 +165,35 @@ int bm_read(BM *b, int x, int y) {
     return pen;
 }
 
+uint32_t bm_read_rgb(BM *b, int x, int y) {
+    if (x < 0 || y < 0 || x >= b->width || y >= b->rows) return 0;
+    if (b->chunky) { uint32_t *p = px32(b, x, y); return p ? get32(p) : 0; }
+    return pal_or_default(b->pal)[bm_read(b, x, y)];
+}
+void bm_put_rgb(BM *b, int x, int y, uint32_t rgb) {
+    if (x < 0 || y < 0 || x >= b->width || y >= b->rows) return;
+    if (b->chunky) { uint32_t *p = px32(b, x, y); if (p) put32(p, rgb); return; }
+    bm_pixel(b, x, y, nearest_pen(pal_or_default(b->pal), rgb), JAM1, 0xFF);
+}
+
 void bm_fill(BM *b, int x0, int y0, int x1, int y1, int pen, int mode, int mask) {
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x1 >= b->bpr * 8) x1 = b->bpr * 8 - 1;
+    if (x1 >= b->width) x1 = b->width - 1;
     if (y1 >= b->rows) y1 = b->rows - 1;
     if (x0 > x1 || y0 > y1) return;
+    if (b->chunky) {
+        if (!(mask & 0xFF)) return;
+        uint32_t c = b->pal[pen & 0xFF];
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++) {
+                uint32_t *p = px32(b, x, y);
+                if (p) put32(p, (mode & COMPLEMENT) ? get32(p) ^ 0xFFFFFF : c);
+            }
+        return;
+    }
     int bx0 = x0 >> 3, bx1 = x1 >> 3;
     uint8_t m0 = (uint8_t)(0xFF >> (x0 & 7)), m1 = (uint8_t)(0xFF << (7 - (x1 & 7)));
     for (int p = 0; p < b->depth; p++) {
@@ -99,6 +226,16 @@ void bm_line(BM *b, int x0, int y0, int x1, int y1, int pen, int mode, int mask)
     }
 }
 
+/* a minterm on whole words: D = f(B source, C destination), bit by bit */
+static inline uint32_t minterm_apply(int minterm, uint32_t bsrc, uint32_t c) {
+    uint32_t r = 0;
+    if (minterm & 0x80) r |= bsrc & c;
+    if (minterm & 0x40) r |= bsrc & ~c;
+    if (minterm & 0x20) r |= ~bsrc & c;
+    if (minterm & 0x10) r |= ~bsrc & ~c;
+    return r;
+}
+
 /* blitter-style copy: D = f(B = source, C = destination) per minterm, the
    A channel being all ones (BltBitMap's model) */
 void bm_copy(BM *s, int sx, int sy, BM *d, int dx, int dy, int w, int h, int minterm, int mask) {
@@ -107,12 +244,34 @@ void bm_copy(BM *s, int sx, int sy, BM *d, int dx, int dy, int w, int h, int min
     if (sy < 0) { h += sy; dy -= sy; sy = 0; }
     if (dx < 0) { w += dx; sx -= dx; dx = 0; }
     if (dy < 0) { h += dy; sy -= dy; dy = 0; }
-    if (sx + w > s->bpr * 8) w = s->bpr * 8 - sx;
+    if (sx + w > s->width) w = s->width - sx;
     if (sy + h > s->rows) h = s->rows - sy;
-    if (dx + w > d->bpr * 8) w = d->bpr * 8 - dx;
+    if (dx + w > d->width) w = d->width - dx;
     if (dy + h > d->rows) h = d->rows - dy;
     if (w <= 0 || h <= 0) return;
     minterm &= 0xFF;
+    if (s->chunky || d->chunky) {
+        /* through colours: a pen of the source takes the destination's palette */
+        uint32_t *tmp = malloc(sizeof(uint32_t) * (size_t)w * h);
+        const uint32_t *dpal = pal_or_default(d->pal);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                tmp[y * w + x] = s->chunky ? bm_read_rgb(s, sx + x, sy + y) : dpal[bm_read(s, sx + x, sy + y)];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                uint32_t src = tmp[y * w + x];
+                if (d->chunky) {
+                    uint32_t *p = px32(d, dx + x, dy + y);
+                    if (p) put32(p, minterm == 0xC0 ? src : minterm_apply(minterm, src, get32(p)) & 0xFFFFFF);
+                } else {
+                    int pen = nearest_pen(dpal, src);
+                    if (minterm == 0xC0) bm_pixel(d, dx + x, dy + y, pen, JAM1, mask);
+                    else bm_pixel(d, dx + x, dy + y, (int)(minterm_apply(minterm, (uint32_t)pen, (uint32_t)bm_read(d, dx + x, dy + y)) & 0xFF), JAM1, mask);
+                }
+            }
+        free(tmp);
+        return;
+    }
     int depth = d->depth;
     uint8_t *tmp = malloc((size_t)w * h);
     /* read the source first: overlapping copies within one bitmap stay right */
@@ -140,6 +299,7 @@ void bm_copy(BM *s, int sx, int sy, BM *d, int dx, int dy, int w, int h, int min
 }
 
 uint32_t gfx_alloc_bitmap(int w, int h, int depth, int clear) {
+    if (depth > 8) return gfx_alloc_chunky(w, h, 0);
     uint32_t bm = exec_allocmem(BitMap_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
     int bpr = ((w + 15) >> 4) * 2;
     wr16(bm + BitMap_BytesPerRow, bpr);
@@ -152,6 +312,13 @@ uint32_t gfx_alloc_bitmap(int w, int h, int depth, int clear) {
 
 void gfx_free_bitmap(uint32_t bm) {
     if (!bm) return;
+    Chunky *k = chunky_of(bm);
+    if (k) {
+        exec_freemem(k->data, (uint32_t)(k->w * k->h * 4));
+        *k = chunkies[--nchunky];
+        exec_freemem(bm, BitMap_SIZEOF);
+        return;
+    }
     BM b;
     bm_load(bm, &b);
     for (int i = 0; i < b.depth; i++) if (plane_ok(b.planes[i])) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
@@ -319,9 +486,12 @@ static uint32_t g_InitBitMap(M68K *c) {
     wr16(bm + 6, 0);
     return 0;
 }
+/* AllocBitMap(width, height, depth, flags, friend): true colour when deeper than 8
+   bits or when the friend is (an off-screen BitMap for a graphics card's screen) */
 static uint32_t g_AllocBitMap(M68K *c) {
     int depth = (int)c->d[2];
-    if (depth > 8) depth = 8;
+    Chunky *f = c->a[0] ? chunky_of(c->a[0]) : 0;
+    if (f || depth > 8) return gfx_alloc_chunky((int)c->d[0], (int)c->d[1], f ? f->pal : 0);
     return gfx_alloc_bitmap((int)c->d[0], (int)c->d[1], depth, c->d[3] & 1);
 }
 static uint32_t g_FreeBitMap(M68K *c) { gfx_free_bitmap(c->a[0]); return 0; }
@@ -332,11 +502,12 @@ static uint32_t g_AllocRaster(M68K *c) {
 static uint32_t g_FreeRaster(M68K *c) { exec_freemem(c->a[0], ((c->d[0] + 15) >> 4) * 2 * c->d[1]); return 0; }
 static uint32_t g_GetBitMapAttr(M68K *c) {
     uint32_t bm = c->a[0];
+    Chunky *k = chunky_of(bm);
     switch (c->d[1]) {
     case 0: return rd16(bm + BitMap_Rows);                  /* BMA_HEIGHT */
-    case 4: return rd8(bm + BitMap_Depth);                  /* BMA_DEPTH */
-    case 8: return rd16(bm + BitMap_BytesPerRow) * 8u;      /* BMA_WIDTH */
-    case 12: return 0;                                      /* BMA_FLAGS */
+    case 4: return k ? 24 : rd8(bm + BitMap_Depth);         /* BMA_DEPTH */
+    case 8: return k ? (uint32_t)k->w : rd16(bm + BitMap_BytesPerRow) * 8u;   /* BMA_WIDTH */
+    case 12: return k ? 0 : 8;                              /* BMA_FLAGS: BMF_STANDARD when planar */
     }
     return 0;
 }
@@ -444,13 +615,13 @@ static uint32_t g_ReadPixel(M68K *c) {
     RP r;
     if (!rp_get(RPA(c), &r)) return 0xFFFFFFFF;
     int x = (int16_t)c->d[0], y = (int16_t)c->d[1];
-    if (x < 0 || y < 0 || x >= r.bm.bpr * 8 || y >= r.bm.rows) return 0xFFFFFFFF;
+    if (x < 0 || y < 0 || x >= r.bm.width || y >= r.bm.rows) return 0xFFFFFFFF;
     return (uint32_t)bm_read(&r.bm, x, y);
 }
 static uint32_t g_SetRast(M68K *c) {
     BM b;
     if (!bm_load(rd32(RPA(c) + RastPort_BitMap), &b)) return 0;
-    bm_fill(&b, 0, 0, b.bpr * 8 - 1, b.rows - 1, (int)c->d[0], JAM1, 0xFF);
+    bm_fill(&b, 0, 0, b.width - 1, b.rows - 1, (int)c->d[0], JAM1, 0xFF);
     gfx_touch();
     return 0;
 }
@@ -698,7 +869,7 @@ static uint32_t g_Flood(M68K *c) {
     RP r;
     if (!rp_get(RPA(c), &r)) return 0;
     int sx = (int16_t)c->d[0], sy = (int16_t)c->d[1], mode = (int)c->d[2];
-    int w = r.bm.bpr * 8, h = r.bm.rows;
+    int w = r.bm.width, h = r.bm.rows;
     if (sx < 0 || sy < 0 || sx >= w || sy >= h) return 0;
     int target = bm_read(&r.bm, sx, sy), outline = rd8(RPA(c) + RastPort_AOlPen);
     uint8_t *seen = calloc((size_t)w * h, 1);
@@ -810,7 +981,7 @@ static uint32_t g_ClearEOL(M68K *c) {
     uint32_t rp = c->a[1];
     if (!rp_get(rp, &r)) return 0;
     int x = (int16_t)rd16(rp + RastPort_cp_x), y = (int16_t)rd16(rp + RastPort_cp_y) - rd16(rp + RastPort_TxBaseline);
-    bm_fill(&r.bm, x, y, r.bm.bpr * 8 - 1, y + rd16(rp + RastPort_TxHeight) - 1, r.bg, JAM1, r.mask);
+    bm_fill(&r.bm, x, y, r.bm.width - 1, y + rd16(rp + RastPort_TxHeight) - 1, r.bg, JAM1, r.mask);
     gfx_touch();
     return 0;
 }
@@ -820,7 +991,7 @@ static uint32_t g_ClearScreen(M68K *c) {
     if (!rp_get(rp, &r)) return 0;
     int y = (int16_t)rd16(rp + RastPort_cp_y) - rd16(rp + RastPort_TxBaseline);
     g_ClearEOL(c);
-    bm_fill(&r.bm, 0, y + rd16(rp + RastPort_TxHeight), r.bm.bpr * 8 - 1, r.bm.rows - 1, r.bg, JAM1, r.mask);
+    bm_fill(&r.bm, 0, y + rd16(rp + RastPort_TxHeight), r.bm.width - 1, r.bm.rows - 1, r.bg, JAM1, r.mask);
     gfx_touch();
     return 0;
 }
@@ -1131,7 +1302,7 @@ static uint32_t g_GetDisplayInfoData(M68K *c) {
     case 0x80001000:                                             /* DTAG_DIMS: DimensionInfo */
         len = 88;
         W16(18, 16); W16(20, 16); W16(22, 16368); W16(24, 16384);
-        W16(16, 8);
+        W16(16, m->res == 3 ? 24 : 8);                           /* MaxDepth: true colour on AmigaMac modes */
         for (int r = 0; r < 5; r++) { int o = 26 + 8 * r; W16(o, 0); W16(o + 2, 0); W16(o + 4, m->w - 1); W16(o + 6, m->h - 1); }
         break;
     case 0x80002000:                                             /* DTAG_MNTR: MonitorInfo */

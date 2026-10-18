@@ -161,9 +161,10 @@ extern int gfx_mode_info(uint32_t id, int *w, int *h, int *res, int *lace);
 static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char *title,
                             int type, int showtitle, uint32_t pens, int workbench) {
     if (depth < 1) depth = 1;
-    if (depth > 8) depth = 8;
     int mw, mh, hires = 1, lace = 0;
     if (!gfx_mode_info(modeid, &mw, &mh, &hires, &lace)) { modeid = 0x00029000; hires = 1; lace = 0; }
+    /* deeper than 8 bits: true colour, on the AmigaMac (graphics card) modes only */
+    if (depth > 8) depth = hires == 3 ? 24 : 8;
     NScreen *s = calloc(1, sizeof *s);
     s->w = w; s->h = h; s->depth = depth; s->hires = hires; s->lace = lace; s->modeid = modeid;
     s->workbench = workbench;
@@ -197,7 +198,7 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     wr16(vp + ViewPort_DWidth, w);
     wr16(vp + ViewPort_DHeight, h);
     wr16(vp + ViewPort_Modes, (hires ? 0x8000 : 0) | (lace ? 4 : 0) | (hires == 2 ? 0x20 : 0));
-    int ncol = 1 << depth;
+    int ncol = depth > 8 ? 256 : 1 << depth;
     uint32_t cm = exec_allocmem(ColorMap_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
     wr8(cm + ColorMap_Type, 1);
     wr16(cm + ColorMap_Count, ncol < 32 ? 32 : ncol);
@@ -210,7 +211,8 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     wr16(bm + BitMap_BytesPerRow, bpr);
     wr16(bm + BitMap_Rows, h);
     wr8(bm + BitMap_Depth, depth);
-    for (int i = 0; i < depth; i++) wr32(bm + BitMap_Planes + 4 * i, exec_allocmem((uint32_t)(bpr * h), MEMF_CHIP | MEMF_CLEAR));
+    if (depth > 8) gfx_chunky_at(bm, w, h, s->pal);
+    else for (int i = 0; i < depth; i++) wr32(bm + BitMap_Planes + 4 * i, exec_allocmem((uint32_t)(bpr * h), MEMF_CHIP | MEMF_CLEAR));
     uint32_t rp = scr + Screen_RastPort;
     rp_init(rp);
     wr32(rp + RastPort_BitMap, bm);
@@ -279,14 +281,16 @@ NScreen *workbench_screen(int open_it) {
     for (NScreen *s = screens; s; s = s->next) if (s->workbench) return s;
     if (!open_it) return 0;
     uint32_t id = 0x50031000;                                   /* AmigaMac: 1280x720 unless the prefs say otherwise */
-    int w = 0, h = 0, depth = 8, mw, mh, res, lace;            /* 256 colours: colour icons */
+    int w = 0, h = 0, depth = 24, mw, mh, res, lace;           /* true colour (8 bits on PAL modes) */
     if (!read_screenmode_prefs("ENV:Sys/screenmode.prefs", &id, &w, &h, &depth))
         read_screenmode_prefs("ENVARC:Sys/screenmode.prefs", &id, &w, &h, &depth);
     if (!gfx_mode_info(id, &mw, &mh, &res, &lace)) { id = 0x00029000; mw = 640; mh = 256; }
     if (w < 320 || w > 4096) w = mw;                           /* 0 or STDSCREENWIDTH: the mode's size */
     if (h < 200 || h > 4096) h = mh;
-    if (depth < 1 || depth > 8) depth = 8;
-    return open_screen(w, h, depth, id, "AmigaMac Workbench", 1 /* WBENCHSCREEN */, 1, 0, 1);
+    if (depth < 1 || depth > 32) depth = 24;
+    NScreen *wbs = open_screen(w, h, depth, id, "AmigaMac Workbench", 1 /* WBENCHSCREEN */, 1, 0, 1);
+    gfx_set_default_palette(wbs->pal);
+    return wbs;
 }
 
 static uint32_t i_OpenScreenTagList(M68K *c) {
@@ -332,7 +336,8 @@ static uint32_t i_OpenScreenTagList(M68K *c) {
         uint32_t bm = s->scr + Screen_BitMap;
         BM b;
         bm_load(bm, &b);
-        for (int i = 0; i < b.depth; i++) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
+        if (b.chunky) gfx_chunky_release(bm);
+        else for (int i = 0; i < b.depth; i++) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
         for (int i = 0; i < BitMap_SIZEOF; i++) wr8(bm + (uint32_t)i, rd8(cbm + (uint32_t)i));
         wr32(s->scr + Screen_RastPort + RastPort_BitMap, cbm);
         s->custom_bm = cbm;
@@ -382,7 +387,8 @@ static void free_screen(NScreen *s) {
     uint32_t bm = s->scr + Screen_BitMap;
     BM b;
     bm_load(bm, &b);
-    if (!s->custom_bm) for (int i = 0; i < b.depth; i++) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
+    if (b.chunky) gfx_chunky_release(bm);
+    else if (!s->custom_bm) for (int i = 0; i < b.depth; i++) exec_freemem(b.planes[i], (uint32_t)(b.bpr * b.rows));
     free(s->ov);
     exec_freemem(s->scr, Screen_SIZEOF);
     free(s);
@@ -647,6 +653,7 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
        the Amiga where a visible window is the screen's bitmap: programs draw into either */
     uint32_t bm = shared ? rd32(s->scr + Screen_RastPort + RastPort_BitMap)
                          : gfx_alloc_bitmap(w > s->w ? w : s->w, h > s->h ? h : s->h, s->depth, 1);
+    gfx_set_palette(bm, s->pal);
     NWindow *nwn = calloc(1, sizeof *nwn);
     nwn->win = win; nwn->rp = rp; nwn->layer = layer; nwn->bm = bm; nwn->s = s;
     nwn->shared_bm = shared;
@@ -687,6 +694,7 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
         /* the program draws into its own inner bitmap, laid over the frame */
         int iw2 = w - bl - br, ih2 = h - bt - bb;
         nwn->ibm = gfx_alloc_bitmap(s->w, s->h, s->depth, 1);
+        gfx_set_palette(nwn->ibm, s->pal);
         nwn->irp = exec_allocmem(RastPort_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
         rp_init(nwn->irp);
         wr32(nwn->irp + RastPort_BitMap, nwn->ibm);
@@ -1284,6 +1292,20 @@ static const NativeEntry intui_natives[] = {
 /* ---- the compositor ------------------------------------------------------- */
 
 static void blit_planar(uint32_t *out, int ow, int oh, BM *b, int ox, int oy, int w, int h, const uint32_t *pal) {
+    if (b->chunky) {                                            /* true colour: the pixels as they are */
+        for (int y = 0; y < h && y < b->rows; y++) {
+            int dy = oy + y;
+            if (dy < 0 || dy >= oh) continue;
+            const uint8_t *src = mem + b->data + (size_t)y * b->width * 4;
+            uint32_t *row = out + (size_t)dy * ow;
+            for (int x = 0; x < w && x < b->width; x++) {
+                int dx = ox + x;
+                if (dx < 0 || dx >= ow) continue;
+                row[dx] = 0xFF000000u | (uint32_t)src[x * 4 + 1] << 16 | (uint32_t)src[x * 4 + 2] << 8 | src[x * 4 + 3];
+            }
+        }
+        return;
+    }
     for (int y = 0; y < h; y++) {
         int sy = y, dy = oy + y;
         if (dy < 0 || dy >= oh || sy >= b->rows) continue;

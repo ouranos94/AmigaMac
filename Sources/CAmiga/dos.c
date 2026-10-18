@@ -2355,7 +2355,7 @@ static void dol_rebuild(void) {
        Opus 4 swaps only one byte per exchange) then find nothing to move */
     int order[64], n = 0;
     for (int i = 0; i < nassigns; i++)
-        if (strcasecmp(assigns[i].name, "RAM") && strcasecmp(assigns[i].name, "Mac")) order[n++] = i;
+        if (strcasecmp(assigns[i].name, "RAM") && strcasecmp(assigns[i].name, "Mac") && strcasecmp(assigns[i].name, "DH0")) order[n++] = i;
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0 && strcasecmp(assigns[order[j - 1]].name, assigns[order[j]].name) > 0; j--) {
             int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
@@ -2604,6 +2604,7 @@ void dos_init(const char *sysdir) {
     char p[1100];
     nassigns = 0;
     assign_set("SYS", sys_dir);
+    assign_set("DH0", sys_dir);                                /* the device holding the System disk */
     assign_set("RAM", ram_dir);
     assign_set("Mac", "/");
     static const char *dirs[] = { "C", "Libs", "Devs", "S", "L", "Fonts", "Prefs", "Utilities", "Tools", "Locale" };

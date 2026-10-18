@@ -12,7 +12,21 @@ typedef struct {
     uint32_t addr;
     int bpr, rows, depth;
     uint32_t planes[8];
+    int width;                      /* in pixels */
+    int chunky;                     /* a true-colour BitMap: 32-bit 0xAARRGGBB pixels at data */
+    uint32_t data;
+    const uint32_t *pal;            /* how pens look on it (0x00RRGGBB x 256) */
 } BM;
+
+/* true-colour BitMaps: pens are drawn through the palette of the screen they belong to */
+uint32_t gfx_alloc_chunky(int w, int h, const uint32_t *pal);
+int gfx_is_chunky(uint32_t bitmap);
+void gfx_set_palette(uint32_t bitmap, const uint32_t *pal);
+void gfx_set_default_palette(const uint32_t *pal);
+int gfx_chunky_at(uint32_t bitmap, int w, int h, const uint32_t *pal);   /* a Screen's own BitMap */
+void gfx_chunky_release(uint32_t bitmap);
+uint32_t bm_read_rgb(BM *b, int x, int y);                 /* 0x00RRGGBB */
+void bm_put_rgb(BM *b, int x, int y, uint32_t rgb);
 
 int bm_load(uint32_t bitmap, BM *b);
 uint32_t gfx_alloc_bitmap(int width, int height, int depth, int clear);

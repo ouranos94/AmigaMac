@@ -472,7 +472,7 @@ static int draw_colour(uint32_t rp, ColorIcon *ci, int x, int y, int selected) {
     if (ci->map_screen != s->id) { ci->map_screen = s->id; memset(ci->map, 0xFF, sizeof ci->map); }
     int16_t *map = m < 2 ? ci->map[m] : 0;
     static int16_t dark[256];
-    if (darken) {                                               /* mapped each time: rare */
+    if (darken && !b.chunky) {                                  /* mapped each time: rare */
         for (int i = 0; i < ci->ncol[0]; i++) {
             uint32_t c = ci->pal[0][i];
             uint32_t r = (c >> 16 & 0xFF) * 3 / 4, g = (c >> 8 & 0xFF) * 3 / 4, bl = (c & 0xFF) * 3 / 4;
@@ -481,6 +481,17 @@ static int draw_colour(uint32_t rp, ColorIcon *ci, int x, int y, int selected) {
         map = dark;
     }
     const uint8_t *pix = ci->pix[k];
+    if (b.chunky) {                                             /* true colour: the exact colours */
+        for (int j = 0; j < ci->h; j++)
+            for (int i = 0; i < ci->w; i++) {
+                int v = pix[j * ci->w + i];
+                if (v == ci->trans[k] || v >= ci->ncol[k]) continue;
+                uint32_t c = ci->pal[k][v];
+                if (darken) c = ((c >> 16 & 0xFF) * 3 / 4) << 16 | ((c >> 8 & 0xFF) * 3 / 4) << 8 | (c & 0xFF) * 3 / 4;
+                bm_put_rgb(&b, x + i, y + j, c);
+            }
+        return 1;
+    }
     for (int j = 0; j < ci->h; j++)
         for (int i = 0; i < ci->w; i++) {
             int v = pix[j * ci->w + i];

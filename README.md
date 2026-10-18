@@ -203,6 +203,17 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   comme sur AmigaOS. Un jeu d'icônes AmigaMac original est dessiné par
   `tools/mkicons.py` : tiroir, disque, Ram Disk, Mac, corbeille, outil, document, Shell,
   ScreenMode ; chaque fichier garde aussi une image classique 4 couleurs.
+- **Couleurs vraies (comme une carte graphique)** : les modes « AmigaMac: » vont
+  jusqu'à 24 bits (16 millions de couleurs), le Workbench y est par défaut. La
+  bibliothèque graphique a un second type d'image, en couleurs vraies (32 bits par
+  point) ; les programmes qui dessinent avec des stylos continuent de marcher (les
+  stylos passent par la palette de l'écran), les copies convertissent entre les deux
+  types. **cybergraphics.library** (v41) donne aux programmes l'accès direct :
+  `WritePixelArray`, `ReadPixelArray`, `WriteLUTPixelArray`, `ScalePixelArray`,
+  `Read`/`WriteRGBPixel`, `FillPixelArray`, `LockBitMapTagList`, `GetCyberMapAttr`,
+  `BestCModeIDTagList`, liste des modes… ScreenMode propose 16 et 24 bits. Visage
+  affiche ainsi une image ILBM 24 bits sans perte. La mémoire Amiga passe à 256 Mo.
+  Les modes PAL restent à 256 couleurs, comme sur un vrai Amiga.
 - **Fond et organisation** : le Workbench lit `ENV:Sys/wbpattern.prefs` (format
   WBPattern, image en mosaïque, centrée ou à l'échelle) et affiche l'image nommée
   derrière le bureau ; le fond AmigaMac (dégradé et nom, dessin original) est produit

@@ -150,6 +150,7 @@ void clipboard_init(void);
 void keyboard_init(void);
 void inputdevice_init(void);
 void commodities_init(void);
+void cybergfx_init(void);
 void rexxsyslib_init(void);
 uint32_t timer_systime_secs(void);
 uint32_t exec_allocmem(uint32_t size, uint32_t flags);

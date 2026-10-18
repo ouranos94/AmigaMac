@@ -172,6 +172,37 @@ static const FdFunc fd_console[] = {
     { 66, "consolePrivate3", "" },
     { 72, "consolePrivate4", "" },
 };
+static const FdFunc fd_cybergraphics[] = {
+    { 30, "cgfxPrivate1", "" },
+    { 36, "cgfxPrivate2", "" },
+    { 42, "cgfxPrivate3", "" },
+    { 48, "cgfxPrivate4", "" },
+    { 54, "IsCyberModeID", "d0" },
+    { 60, "BestCModeIDTagList", "a0" },
+    { 66, "CModeRequestTagList", "a0/a1" },
+    { 72, "AllocCModeListTagList", "a1" },
+    { 78, "FreeCModeList", "a0" },
+    { 84, "cgfxPrivate5", "" },
+    { 90, "ScalePixelArray", "a0/d0/d1/d2/a1/d3/d4/d5/d6/d7" },
+    { 96, "GetCyberMapAttr", "a0/d0" },
+    { 102, "GetCyberIDAttr", "d0/d1" },
+    { 108, "ReadRGBPixel", "a1/d0/d1" },
+    { 114, "WriteRGBPixel", "a1/d0/d1/d2" },
+    { 120, "ReadPixelArray", "a0/d0/d1/d2/a1/d3/d4/d5/d6/d7" },
+    { 126, "WritePixelArray", "a0/d0/d1/d2/a1/d3/d4/d5/d6/d7" },
+    { 132, "MovePixelArray", "d0/d1/a1/d2/d3/d4/d5" },
+    { 138, "cgfxPrivate6", "" },
+    { 144, "InvertPixelArray", "a1/d0/d1/d2/d3" },
+    { 150, "FillPixelArray", "a1/d0/d1/d2/d3/d4" },
+    { 156, "DoCDrawMethodTagList", "a0/a1/a2" },
+    { 162, "CVideoCtrlTagList", "a0/a1" },
+    { 168, "LockBitMapTagList", "a0/a1" },
+    { 174, "UnLockBitMap", "a0" },
+    { 180, "UnLockBitMapTagList", "a0/a1" },
+    { 186, "ExtractColor", "a0/a1/d0/d1/d2/d3/d4" },
+    { 192, "cgfxPrivate7", "" },
+    { 198, "WriteLUTPixelArray", "a0/d0/d1/d2/a1/a2/d3/d4/d5/d6/d7" },
+};
 static const FdFunc fd_datatypes[] = {
     { 30, "datatypesPrivate1", "" },
     { 36, "ObtainDataTypeA", "d0/a0/a1" },
@@ -1463,6 +1494,7 @@ const FdLib fd_libs[] = {
     { "colorwheel", fd_colorwheel, 2 },
     { "commodities", fd_commodities, 35 },
     { "console", fd_console, 6 },
+    { "cybergraphics", fd_cybergraphics, 29 },
     { "datatypes", fd_datatypes, 27 },
     { "datebrowser", fd_datebrowser, 4 },
     { "disk", fd_disk, 6 },
@@ -1523,4 +1555,4 @@ const FdLib fd_libs[] = {
     { "wb", fd_wb, 19 },
     { "window", fd_window, 1 },
 };
-const int fd_lib_count = 76;
+const int fd_lib_count = 77;
