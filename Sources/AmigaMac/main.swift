@@ -78,6 +78,14 @@ private let hostClipSet: @convention(c) (UnsafePointer<CChar>?, Int32) -> Void =
     }
 }
 
+// the Amiga pointer, as the cursor over the screen windows
+private let hostPointer: @convention(c) (Int32, Int32, UnsafePointer<UInt32>?, Int32, Int32, Int32, Int32) -> Void = { _, kind, argb, w, h, hx, hy in
+    var pixels: [UInt32] = []
+    if kind == 1, let argb { pixels = Array(UnsafeBufferPointer(start: argb, count: Int(w * h))) }
+    let p = AmigaPointer(kind: Int(kind), pixels: pixels, w: Int(w), h: Int(h), hx: Int(hx), hy: Int(hy))
+    DispatchQueue.main.async { AmigaPointer.current = p; ScreenWindowController.pointerChanged() }
+}
+
 // the Workbench opens host files it has no Amiga tool for with their macOS application
 private let hostOpenFile: @convention(c) (UnsafePointer<CChar>?) -> Void = { path in
     guard let path = path else { return }
@@ -156,15 +164,26 @@ func systemDirectory() -> URL {
     let fm = FileManager.default
     let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("AmigaMac/System")
-    if !fm.fileExists(atPath: support.path) {
-        try? fm.createDirectory(at: support, withIntermediateDirectories: true)
-        // first launch: install the bundled system template
-        if let template = Bundle.main.resourceURL?.appendingPathComponent("System"),
-           let items = try? fm.contentsOfDirectory(at: template, includingPropertiesForKeys: nil) {
-            for item in items { try? fm.copyItem(at: item, to: support.appendingPathComponent(item.lastPathComponent)) }
-        }
-    }
+    try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+    if let template = Bundle.main.resourceURL?.appendingPathComponent("System") { installSystem(from: template, to: support) }
     return support
+}
+
+/// The system files this AmigaMac ships: installed when missing, replaced when the
+/// bundle has a newer one. Everything else in the user's System is left alone.
+func installSystem(from template: URL, to dest: URL) {
+    let fm = FileManager.default
+    guard let files = fm.enumerator(at: template, includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]) else { return }
+    for case let src as URL in files {
+        let rel = String(src.path.dropFirst(template.path.count + 1))
+        let dst = dest.appendingPathComponent(rel)
+        let v = try? src.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+        if v?.isDirectory == true { try? fm.createDirectory(at: dst, withIntermediateDirectories: true); continue }
+        let mine = (try? dst.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let mine, let theirs = v?.contentModificationDate, mine >= theirs { continue }
+        try? fm.removeItem(at: dst)
+        try? fm.copyItem(at: src, to: dst)
+    }
 }
 
 // MARK: - Application
@@ -219,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.open_file = hostOpenFile
         host.clipboard_get = hostClipGet
         host.clipboard_set = hostClipSet
+        host.pointer = hostPointer
         os_boot(sys)
         Console.shared.write("AmigaMac — AmigaOS réécrit nativement pour macOS\n" +
                              "Tapez HELP pour la liste des commandes.\n\n")

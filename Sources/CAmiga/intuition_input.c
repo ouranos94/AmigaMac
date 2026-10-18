@@ -887,6 +887,28 @@ static void handle_tick(void) {
     send_idcmp(w, IDCMP_INTUITICKS, 0, (uint32_t)qualifier, 0, 0, 0);
 }
 
+static int last_mx, last_my;
+
+/* one event to Intuition (after the input handlers) */
+static void dispatch(InputEv *ev) {
+    if (ev->type == IEV_TICK) { handle_tick(); return; }
+    if (ev->type == IEV_KEY) { handle_key(ev->code, ev->ch, ev->qual); return; }
+    NScreen *s = screen_by_id(ev->screen);
+    if (!s) return;
+    if (ev->type == IEV_MOUSE) handle_move(s, ev->x, ev->y);
+    else if (ev->type == IEV_BUTTON) handle_button(s, ev->x, ev->y, ev->code);
+    else if (ev->type == IEV_CLOSE_SCREEN)
+        for (NWindow *w = s->wins; w; w = w->next) send_idcmp(w, IDCMP_CLOSEWINDOW, 0, 0, 0, 0, 0);
+}
+
+static int cur_screen;
+/* events a commodity puts in the stream, in place of the one it took (input task only) */
+void input_dispatch_now(InputEv *ev) {
+    if (ev->type == IEV_BUTTON && !ev->screen) ev->screen = cur_screen;
+    if (ev->type == IEV_BUTTON) { ev->x = last_mx; ev->y = last_my; }
+    dispatch(ev);
+}
+
 void input_task_main(void *arg) {
     (void)arg;
     InputEv ev;
@@ -895,15 +917,10 @@ void input_task_main(void *arg) {
         uint32_t m;
         while ((m = list_remhead(ireply_port + MP_MSGLIST))) exec_freemem(m, 56);   /* replied IntuiMessages */
         extern int input_handlers_filter(InputEv *ev);
+        if (ev.screen) cur_screen = ev.screen;
+        if (ev.type == IEV_MOUSE) { last_mx = ev.x; last_my = ev.y; }
         if (!input_handlers_filter(&ev)) continue;              /* a program's input handler ate it */
-        if (ev.type == IEV_TICK) { handle_tick(); continue; }
-        if (ev.type == IEV_KEY) { handle_key(ev.code, ev.ch, ev.qual); continue; }
-        NScreen *s = screen_by_id(ev.screen);
-        if (!s) continue;
-        if (ev.type == IEV_MOUSE) handle_move(s, ev.x, ev.y);
-        else if (ev.type == IEV_BUTTON) handle_button(s, ev.x, ev.y, ev.code);
-        else if (ev.type == IEV_CLOSE_SCREEN)
-            for (NWindow *w = s->wins; w; w = w->next) send_idcmp(w, IDCMP_CLOSEWINDOW, 0, 0, 0, 0, 0);
+        dispatch(&ev);
     }
 }
 

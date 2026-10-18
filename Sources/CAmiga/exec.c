@@ -520,6 +520,8 @@ static void put_msg(uint32_t port, uint32_t msg) {
     }
 }
 
+void exec_put_msg(uint32_t port, uint32_t msg) { put_msg(port, msg); }
+
 static uint32_t f_PutMsg(M68K *c) {
     put_msg(c->a[0], c->a[1]);
     if (sched_need_resched) sched_preempt_point();

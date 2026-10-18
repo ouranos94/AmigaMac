@@ -28,6 +28,7 @@ int os_boot(const char *sysdir) {
     clipboard_init();
     keyboard_init();
     inputdevice_init();
+    commodities_init();
     rexxsyslib_init();
     gfx_init();
     layers_init();

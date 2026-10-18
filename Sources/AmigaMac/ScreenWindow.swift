@@ -3,8 +3,44 @@
 import AppKit
 import CAmiga
 
+/// The pointer Intuition shows: the Mac arrow, an Amiga image (lores pixels), or none.
+struct AmigaPointer {
+    var kind: Int                    // 0 arrow, 1 image, 2 hidden
+    var pixels: [UInt32]             // 0xAARRGGBB
+    var w, h, hx, hy: Int
+    static var current = AmigaPointer(kind: 0, pixels: [], w: 0, h: 0, hx: 0, hy: 0)
+
+    /// an NSCursor for a view showing `scale` points per lores pixel
+    func cursor(scale: NSSize) -> NSCursor {
+        if kind == 0 { return .arrow }
+        let fx = max(1, Int(scale.width.rounded())), fy = max(1, Int(scale.height.rounded()))
+        let pw = kind == 2 ? 1 : w * fx * 2, ph = kind == 2 ? 1 : h * fy * 2     // crisp on Retina
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pw, pixelsHigh: ph, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: pw * 4, bitsPerPixel: 32), let data = rep.bitmapData else { return .arrow }
+        memset(data, 0, pw * ph * 4)
+        if kind == 1 {
+            for y in 0..<ph { for x in 0..<pw {
+                let v = pixels[(y / (fy * 2)) * w + x / (fx * 2)]
+                let o = (y * pw + x) * 4
+                data[o] = UInt8((v >> 16) & 0xFF); data[o + 1] = UInt8((v >> 8) & 0xFF)
+                data[o + 2] = UInt8(v & 0xFF); data[o + 3] = UInt8(v >> 24)
+            } }
+        }
+        let size = kind == 2 ? NSSize(width: 1, height: 1) : NSSize(width: CGFloat(w * fx), height: CGFloat(h * fy))
+        rep.size = size
+        let img = NSImage(size: size)
+        img.addRepresentation(rep)
+        return NSCursor(image: img, hotSpot: NSPoint(x: CGFloat(hx * fx), y: CGFloat(hy * fy)))
+    }
+}
+
 final class ScreenWindowController: NSObject, NSWindowDelegate {
     static var open: [Int32: ScreenWindowController] = [:]
+
+    static func pointerChanged() {
+        for c in open.values { c.window.invalidateCursorRects(for: c.view) }
+    }
     let id: Int32
     let window: NSWindow
     let view: ScreenView
@@ -55,7 +91,6 @@ final class ScreenView: NSView {
     let w: Int, h: Int
     private var pixels: [UInt32]
     private var timer: Timer?
-    private var tick: Timer?
     private var lastSerial: UInt32 = .max
     private var qualifiers: Int32 = 0
 
@@ -69,19 +104,25 @@ final class ScreenView: NSView {
         layer?.magnificationFilter = .nearest
         layer?.contentsGravity = .resize
         timer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in self?.refresh() }
-        tick = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            var ev = InputEv(type: Int32(IEV_TICK), screen: id, x: 0, y: 0, code: 0, qual: 0, ch: 0)
-            amiga_input_event(&ev)
-        }
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
     }
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+
+    override func resetCursorRects() {
+        var w: Int32 = 640, h: Int32 = 256, hires: Int32 = 1, lace: Int32 = 0
+        amiga_display_size(id, &w, &h, &hires, &lace)
+        // points per lores pixel: sprites are low resolution
+        let xres: CGFloat = [1, 2, 4, 2][Int(max(0, min(3, hires)))]
+        let yres: CGFloat = hires == 3 ? 2 : (lace != 0 ? 2 : 1)
+        let scale = NSSize(width: bounds.width / CGFloat(self.w) * xres, height: bounds.height / CGFloat(self.h) * yres)
+        addCursorRect(bounds, cursor: AmigaPointer.current.cursor(scale: scale))
+    }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    func stop() { timer?.invalidate(); tick?.invalidate() }
+    func stop() { timer?.invalidate() }
 
     func refresh() {
         let serial = amiga_display_serial()

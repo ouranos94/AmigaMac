@@ -781,6 +781,37 @@ static int c_protect(int argc, char argv[][512], const char *rest) {
     return 0;
 }
 
+/* EXCHANGE [name SHOW|HIDE|ENABLE|DISABLE|KILL]: the commodities and their commands */
+extern int cx_broker_count(void);
+extern const char *cx_broker_info(int i, const char **title, const char **descr, int *active);
+extern int cx_broker_command(const char *name, uint32_t id);
+static int c_exchange(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    if (argc < 3) {
+        int n = cx_broker_count();
+        if (!n) { out("Aucune commodit\xe9 active.\n"); return 0; }
+        for (int i = 0; i < n; i++) {
+            const char *t, *d;
+            int on;
+            const char *name = cx_broker_info(i, &t, &d, &on);
+            out("%-16s %-8s %s\n                 %s\n", name, on ? "active" : "inactive", t, d);
+        }
+        return 0;
+    }
+    static const struct { const char *w; uint32_t id; } cmds[] = {
+        { "SHOW", 19 }, { "APPEAR", 19 }, { "HIDE", 21 }, { "DISAPPEAR", 21 },
+        { "ENABLE", 17 }, { "DISABLE", 15 }, { "KILL", 23 }, { "QUIT", 23 },
+    };
+    for (unsigned i = 0; i < sizeof cmds / sizeof *cmds; i++)
+        if (!strcasecmp(argv[2], cmds[i].w)) {
+            if (cx_broker_command(argv[1], cmds[i].id)) return 0;
+            out("EXCHANGE : pas de commodit\xe9 %s\n", argv[1]);
+            return 10;
+        }
+    out("EXCHANGE nom SHOW|HIDE|ENABLE|DISABLE|KILL\n");
+    return 10;
+}
+
 static int c_endcli(int argc, char argv[][512], const char *rest) { (void)argc; (void)argv; (void)rest; return -2; }
 
 extern int intui_active_screen_id(void);
@@ -825,8 +856,9 @@ static int c_input(int argc, char argv[][512], const char *rest) {
         amiga_input_event(&k);
         return 0;
     }
-    if (!strcasecmp(op, "RAW")) {
-        InputEv k = { IEV_KEY, id, 0, 0, (int)strtol(argv[2], 0, 0), 0, 0 };
+    if (!strcasecmp(op, "RAW")) {                          /* INPUT RAW code [qualifier] */
+        int q = argc > 3 ? (int)strtol(argv[3], 0, 0) : 0;
+        InputEv k = { IEV_KEY, id, 0, 0, (int)strtol(argv[2], 0, 0), q, 0 };
         amiga_input_event(&k);
         return 0;
     }
@@ -969,6 +1001,7 @@ static const struct { const char *name; Builtin fn; const char *help; } builtins
     { "QUIT", c_scriptonly, "quitte un script" },
     { "FAILAT", c_scriptonly, "seuil d'échec (dans un script)" },
     { "ASK", c_ask, "pose une question oui/non" },
+    { "EXCHANGE", c_exchange, "liste et commande les commodit\xc3\xa9s" },
     { "WHICH", c_which, "trouve une commande" },
     { "PROTECT", c_protect, "bits de protection" },
     { "RUN", c_run, "lance une commande en arrière-plan" },

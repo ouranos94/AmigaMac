@@ -178,6 +178,17 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   traverse avant Intuition, `IND_WRITEEVENT`, `PeekQualifier`), requêtes à l'ancienne
   `Request`/`EndRequest`, `SetABPenDrMd`, `InitGels`, `PubScreenStatus`.
   `S:User-Startup` est exécuté au démarrage s'il existe (assigns des logiciels installés).
+- **commodities.library** : brokers (unicité, `CXCMD_UNIQUE`, `CXCMD_LIST_CHG`), objets
+  filtre, émetteur, signal, traduction et personnalisé, descriptions de raccourcis
+  (`ParseIX` : « ctrl alt d », « rawmouse lbutton », « -upstroke f1 »…), `MatchIX`,
+  `InvertKeyMap`, `AddIEvents`. Le réseau est dans le flux d'entrée à la priorité 53,
+  avant Intuition ; les événements traduits prennent la place de l'original. La
+  commande `EXCHANGE` du Shell liste les commodités et leur envoie SHOW, HIDE, ENABLE,
+  DISABLE ou KILL (l'Exchange d'AmigaOS passe par des fonctions privées).
+- **Pointeur** : celui d'Amiga devient le curseur du Mac au-dessus des écrans —
+  `SetPointer`/`ClearPointer`, pointeur d'attente (`WA_BusyPointer`, `SetWindowPointerA`),
+  et le sprite 0 (`GetSprite`/`ChangeSprite`/`FreeSprite`) que prennent les économiseurs
+  pour le cacher. input.device produit lui-même ses événements temporels (10 par seconde).
 - **Icône Shell** dans le tiroir `SYS:System`, à sa place sur AmigaOS : un double-clic
   ouvre une fenêtre Shell (programme 68k `Programs/shell.c`, icône dessinée dans
   `fonts/shell_icon.txt` et produite par `tools/mkinfo.py`).
@@ -209,6 +220,10 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
 | 0Filters 1.0 (util/cli) | 18 filtres Shell (Head, Tail, Uniq, WC, Tee, Strings, Encode…) | fonctionnent tous |
 | Directory Opus 4.12 (util/dopus) | gestionnaire de fichiers, sa propre dopus.library | fonctionne (listes, Makedir, visionneuse) ; disquettes absentes |
 | LhA 2.15 (util/arc) | archiveur, installé dans `C:LhA` | fonctionne (liste, extraction, dates conservées) |
+| NewShellCX 1.07 (util/cdity) | commodité, Shell sur raccourci | fonctionne (Amiga gauche + Échap) |
+| MouseBlanker 1.21 (util/cdity) | commodité, cache le pointeur | fonctionne (sprite 0) |
+| Spliner 1.7 (util/cdity) | commodité, économiseur d'écran | fonctionne (veille et réveil) |
+| KeyCall 1.3.2 (util/cdity) | raccourcis de lancement (gestionnaire d'entrée) | se lance |
 | 0Utils (util/cli) | 25 commandes Shell pour scripts (Open/ReadLn/WriteLn, SRun, Exists…) | fonctionnent, sauf `Window` (binaire défectueux dans l'archive) |
 
 Corrigé en chemin : pile superviseur des tâches, `CreateMsgPort` qui laisse le port

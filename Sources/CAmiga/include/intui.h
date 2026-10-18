@@ -112,6 +112,9 @@ struct NWindow {
     int x, y, w, h;
     /* native consumer of this window's keys and events (consoles) */
     void (*hook)(NWindow *w, int kind, int a, int b, int c);
+    /* its pointer: 0 the system one, 1 SetPointer's image, 2 busy */
+    int ptr_kind, ptr_w, ptr_h, ptr_hx, ptr_hy;
+    uint8_t *ptr_pix;               /* pens 0-3, ptr_w x ptr_h */
     NWindow *next;                  /* towards the back */
 };
 
@@ -129,6 +132,8 @@ NScreen *workbench_screen(int open_it);
 void draw_frame(NWindow *w);
 void draw_screen_bar(NScreen *s);
 void win_activate(NWindow *w);
+void pointer_update(void);
+void pointer_sprite0(const uint8_t *pix, int h, int on);   /* graphics: sprite 0 is the pointer */
 void win_to_front(NWindow *w);
 void win_to_back(NWindow *w);
 void win_move(NWindow *w, int x, int y);

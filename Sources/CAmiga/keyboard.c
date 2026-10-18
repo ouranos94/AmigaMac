@@ -126,8 +126,13 @@ static uint32_t in_BeginIO(M68K *c) {
 static uint32_t in_PeekQualifier(M68K *c) { (void)c; return (uint32_t)input_qualifier() & 0xFFFF; }
 
 /* called by the input task for each event; 0 when a handler ate it */
+extern int cx_active(void);
+extern int cx_filter(M68K *c, uint32_t ie);
+
 int input_handlers_filter(InputEv *ev) {
-    if (!nhandlers) return 1;
+    if (ev->qual & 0x10000) { ev->qual &= 0xFFFF; return 1; }  /* put in by commodities: on to Intuition */
+    int cx = cx_active();
+    if (!nhandlers && !cx) return 1;
     NTask *me = sched_current();
     M68K *c = &me->cpu;
     if (!c->a[7]) c->a[7] = rd32(me->task + TC_SPUPPER);
@@ -160,7 +165,15 @@ int input_handlers_filter(InputEv *ev) {
     uint32_t list = e;
     uint32_t d[8], a[8];
     memcpy(d, c->d, sizeof d); memcpy(a, c->a, sizeof a);
-    for (int i = 0; i < nhandlers && list; i++) {
+    int cx_done = !cx;
+    for (int i = 0; i <= nhandlers && list; i++) {
+        /* the commodities network is the handler of priority 53 */
+        if (!cx_done && (i == nhandlers || (int8_t)rd8(handlers[i] + LN_PRI) <= 53)) {
+            cx_done = 1;
+            if (!cx_filter(c, list)) list = 0;
+            if (!list) break;
+        }
+        if (i == nhandlers) break;
         c->a[0] = list;
         c->a[1] = rd32(handlers[i] + 14);
         c->a[6] = InputBase;
@@ -179,7 +192,23 @@ static const NativeEntry input_natives[] = {
     { 0, 0 }
 };
 
+/* input.device's own timer events: ten a second, as on the Amiga */
+#include <pthread.h>
+#include <unistd.h>
+static void *ticker(void *arg) {
+    (void)arg;
+    for (;;) {
+        usleep(100000);
+        InputEv ev = { IEV_TICK, 0, 0, 0, 0, 0, 0 };
+        amiga_input_event(&ev);
+    }
+    return 0;
+}
+
 void inputdevice_init(void) {
+    pthread_t t;
+    pthread_create(&t, 0, ticker, 0);
+    pthread_detach(t);
     InputBase = lib_create("input.device", "input", LIB_SIZE, input_natives, 40, 1, "input 40.1 (AmigaMac)");
     wr8(InputBase + LN_TYPE, NT_DEVICE);
     list_enqueue(SysBase + EB_DEVICELIST, InputBase);

@@ -192,6 +192,7 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     for (int i = 0; i < NUMDRIPENS; i++) s->pens[i] = wb_pens[i];
     if (pens) for (int i = 0; i < NUMDRIPENS && rd16(pens + 2 * (uint32_t)i) != 0xFFFF; i++) s->pens[i] = (uint16_t)rd16(pens + 2 * (uint32_t)i);
     for (int i = 0; i < 256; i++) set_pal(s, i, i < 8 ? wb_palette[i] : (uint32_t)((i * 37) & 0xFF) << 16 | (uint32_t)((i * 91) & 0xFF) << 8 | (uint32_t)((i * 53) & 0xFF));
+    set_pal(s, 17, 0xEE4444); set_pal(s, 18, 0x000000); set_pal(s, 19, 0xEEEECC);   /* the pointer's colours */
     wr8(scr + Screen_DetailPen, s->pens[DETAILPEN]);
     wr8(scr + Screen_BlockPen, s->pens[BLOCKPEN]);
     /* DrawInfo */
@@ -684,6 +685,7 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
     wr32(s->scr + Screen_FirstWindow, win);
     pthread_mutex_unlock(&disp_lock);
 
+    if (tags && tag_value(tags, 0x80000098 /* WA_BusyPointer */, 0)) nwn->ptr_kind = 2;
     draw_frame(nwn);
     gadget_render_all(nwn, gadgets, -1);
     if (flags & WFLG_ACTIVATE) win_activate(nwn);
@@ -722,9 +724,11 @@ void close_window(NWindow *w) {
     if (w->ibm) { gfx_free_bitmap(w->ibm); exec_freemem(w->irp, RastPort_SIZEOF); }
     exec_freemem(w->layer, Layer_SIZEOF);
     exec_freemem(win, Window_SIZEOF);
+    free(w->ptr_pix);
     free(w);
     /* the next window becomes active, like on the Workbench */
     if (!active_win && s->wins) win_activate(s->wins);
+    if (!active_win) pointer_update();
     gfx_touch();
 }
 
@@ -752,6 +756,7 @@ void win_activate(NWindow *w) {
         gadget_render_all(w, rd32(w->win + Window_FirstGadget), -1);
         send_idcmp(w, IDCMP_ACTIVEWINDOW, 0, 0, 0, 0, 0);
     }
+    pointer_update();
 }
 
 void win_to_front(NWindow *w) {
@@ -1035,6 +1040,98 @@ static uint32_t i_GetScreenDrawInfo(M68K *c) {
     return s ? s->drawinfo : 0;
 }
 static uint32_t i_FreeScreenDrawInfo(M68K *c) { (void)c; return 0; }
+/* ---- the pointer ------------------------------------------------------------------
+ * Shown as the Mac cursor over the screen windows. Sprite data: posctl words,
+ * then per line two words (plane 0, plane 1); pens 1-3 are colours 17-19. */
+
+static uint8_t spr0_pix[16 * 128];
+static int spr0_h, spr0_on;
+
+/* the busy pointer: a stopwatch (k black, w light, r red) */
+static const char *busy_art[] = {
+    "......kkkk......", ".....kwrrwk.....", "......kkkk......", "....kkwwwwkk....",
+    "...kwwwwwwwwk...", "..kwwwwkwwwwwk..", ".kwwwwwkwwwwwwk.", ".kwwwwwkwwwwwwk.",
+    ".kwwwwwkkkkwwwk.", ".kwwwwwwwwwwwwk.", ".kwwwwwwwwwwwwk.", "..kwwwwwwwwwwk..",
+    "...kwwwwwwwwk...", "....kkwwwwkk....", "......kkkk......", "................",
+};
+
+static void sprite_read(uint32_t data, int h, uint8_t *pix) {
+    for (int y = 0; y < h; y++) {
+        uint16_t p0 = (uint16_t)rd16(data + 4 + 4 * (uint32_t)y), p1 = (uint16_t)rd16(data + 6 + 4 * (uint32_t)y);
+        for (int x = 0; x < 16; x++) pix[y * 16 + x] = (uint8_t)(((p0 >> (15 - x)) & 1) | (((p1 >> (15 - x)) & 1) << 1));
+    }
+}
+
+void pointer_update(void) {
+    if (!host.pointer) return;
+    NWindow *w = active_win;
+    NScreen *s = w ? w->s : screens;
+    int sid = s ? s->id : 0;
+    const uint8_t *pix = 0;
+    uint8_t busy[16 * 16];
+    int pw = 16, ph = 0, hx = 0, hy = 0;
+    if (spr0_on) {
+        int any = 0;
+        for (int i = 0; i < 16 * spr0_h; i++) any |= spr0_pix[i];
+        if (!any) { host.pointer(sid, 2, 0, 0, 0, 0, 0); return; }
+        pix = spr0_pix; ph = spr0_h;
+    } else if (w && w->ptr_kind == 1 && w->ptr_pix) {
+        pix = w->ptr_pix; pw = w->ptr_w; ph = w->ptr_h; hx = w->ptr_hx; hy = w->ptr_hy;
+    } else if (w && w->ptr_kind == 2) {
+        for (int y = 0; y < 16; y++)
+            for (int x = 0; x < 16; x++) {
+                char ch = busy_art[y][x];
+                busy[y * 16 + x] = ch == 'r' ? 1 : ch == 'k' ? 2 : ch == 'w' ? 3 : 0;
+            }
+        pix = busy; ph = 16; hx = 7; hy = 8;
+    } else { host.pointer(sid, 0, 0, 0, 0, 0, 0); return; }
+    uint32_t argb[16 * 128];
+    for (int i = 0; i < pw * ph && i < 16 * 128; i++)
+        argb[i] = pix[i] && s ? 0xFF000000u | s->pal[16 + pix[i]] : 0;
+    host.pointer(sid, 1, argb, pw, ph, hx, hy);
+}
+
+void pointer_sprite0(const uint8_t *pix, int h, int on) {
+    spr0_on = on;
+    if (on) { spr0_h = h > 128 ? 128 : h; memcpy(spr0_pix, pix, (size_t)(16 * spr0_h)); }
+    pointer_update();
+}
+
+/* SetPointer(window, data, height, width, xoffset, yoffset) */
+static uint32_t i_SetPointer(M68K *c) {
+    NWindow *w = nwin_of(c->a[0]);
+    if (!w) return 0;
+    int h = (int)(c->d[0] & 0xFFFF);
+    if (h > 128) h = 128;
+    free(w->ptr_pix);
+    w->ptr_pix = calloc(16, (size_t)(h ? h : 1));
+    if (c->a[1] && h) sprite_read(c->a[1], h, w->ptr_pix);
+    w->ptr_kind = 1;
+    w->ptr_w = 16;
+    w->ptr_h = h;
+    w->ptr_hx = -(int16_t)c->d[2];
+    w->ptr_hy = -(int16_t)c->d[3];
+    if (w == active_win) pointer_update();
+    return 0;
+}
+static uint32_t i_ClearPointer(M68K *c) {
+    NWindow *w = nwin_of(c->a[0]);
+    if (!w) return 0;
+    w->ptr_kind = 0;
+    if (w == active_win) pointer_update();
+    return 0;
+}
+/* SetWindowPointerA(window, tags): WA_Pointer (an object: the system pointer here), WA_BusyPointer */
+#define WA_Pointer_ 0x80000097
+#define WA_BusyPointer_ 0x80000098
+static uint32_t i_SetWindowPointerA(M68K *c) {
+    NWindow *w = nwin_of(c->a[0]);
+    if (!w) return 0;
+    w->ptr_kind = tag_value(c->a[1], WA_BusyPointer_, 0) ? 2 : 0;
+    if (w == active_win) pointer_update();
+    return 0;
+}
+
 static uint32_t i_nop(M68K *c) { (void)c; return 0; }
 static uint32_t i_LockIBase(M68K *c) { (void)c; return 0; }
 
@@ -1112,7 +1209,7 @@ static const NativeEntry intui_natives[] = {
     { "FreeScreenDrawInfo", i_FreeScreenDrawInfo },
     { "MakeScreen", i_nop }, { "RethinkDisplay", i_nop }, { "RemakeDisplay", i_nop },
     { "LockIBase", i_LockIBase }, { "UnlockIBase", i_nop },
-    { "SetPointer", i_nop }, { "ClearPointer", i_nop }, { "SetWindowPointerA", i_nop },
+    { "SetPointer", i_SetPointer }, { "ClearPointer", i_ClearPointer }, { "SetWindowPointerA", i_SetWindowPointerA },
     { "DisplayBeep", i_DisplayBeep }, { "CurrentTime", i_CurrentTime }, { "DoubleClick", i_DoubleClick },
     { "AllocRemember", i_AllocRemember }, { "FreeRemember", i_FreeRemember },
     { "GetPrefs", i_GetPrefs }, { "GetDefPrefs", i_GetPrefs }, { "SetPrefs", i_nop },

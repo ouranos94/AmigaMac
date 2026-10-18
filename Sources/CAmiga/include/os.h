@@ -18,6 +18,8 @@ typedef struct {
     void (*open_file)(const char *host_path);   /* open with the macOS application */
     int (*clipboard_get)(char *utf8, int max);  /* the Mac's text clipboard, -1 if none */
     void (*clipboard_set)(const char *utf8, int len);
+    /* the pointer over a screen: kind 0 the Mac arrow, 1 the image (0xAARRGGBB, lores pixels), 2 hidden */
+    void (*pointer)(int screen, int kind, const uint32_t *argb, int w, int h, int hotx, int hoty);
 } AmigaHost;
 /* input goes the other way: amiga_console_input() / amiga_console_break()
    (sched.h), callable from any host thread */
@@ -136,6 +138,7 @@ void shell_run_background(const char *line);
 uint32_t exec_wait(uint32_t mask);
 uint32_t exec_waitport(uint32_t port);
 void exec_reply_msg(uint32_t msg);
+void exec_put_msg(uint32_t port, uint32_t msg);
 void exec_remove_task(uint32_t task);
 void timer_init(void);
 void math_init(void);
@@ -146,6 +149,7 @@ int input_buttons(void);
 void clipboard_init(void);
 void keyboard_init(void);
 void inputdevice_init(void);
+void commodities_init(void);
 void rexxsyslib_init(void);
 uint32_t timer_systime_secs(void);
 uint32_t exec_allocmem(uint32_t size, uint32_t flags);

@@ -1167,6 +1167,55 @@ static uint32_t g_BestModeIDA(M68K *c) {
     return id;
 }
 
+/* ---- sprites: only sprite 0, the pointer, shows (as the Mac cursor) -------------------
+ * SimpleSprite: posctldata 0, height 4, x 6, y 8, num 10 */
+#include "intui.h"
+static uint8_t sprites_used;
+static uint32_t g_ChangeSprite(M68K *c);
+
+/* GetSprite(sprite, num): that sprite, or any free one for -1 */
+static uint32_t g_GetSprite(M68K *c) {
+    int n = (int16_t)c->d[0];
+    if (n < 0) { for (n = 1; n < 8 && (sprites_used & (1 << n)); n++) ; if (n == 8) return 0xFFFFFFFF; }
+    if (n > 7 || (sprites_used & (1 << n))) return 0xFFFFFFFF;
+    sprites_used |= (uint8_t)(1 << n);
+    if (c->a[0]) wr16(c->a[0] + 10, (uint16_t)n);
+    if (n == 0 && c->a[0]) {                                      /* the pointer takes its posctldata */
+        M68K t = *c;
+        t.a[1] = c->a[0];
+        t.a[2] = rd32(c->a[0]);
+        g_ChangeSprite(&t);
+    }
+    return (uint32_t)n;
+}
+static uint32_t g_FreeSprite(M68K *c) {
+    int n = (int16_t)c->d[0];
+    if (n < 0 || n > 7) return 0;
+    sprites_used &= (uint8_t)~(1 << n);
+    if (n == 0) pointer_sprite0(0, 0, 0);                        /* Intuition's pointer again */
+    return 0;
+}
+/* ChangeSprite(viewport, sprite, newdata) */
+static uint32_t g_ChangeSprite(M68K *c) {
+    uint32_t ss = c->a[1], data = c->a[2];
+    if (!ss || rd16(ss + 10) != 0 || !(sprites_used & 1)) return 0;
+    int h = rd16(ss + 4);
+    if (h > 128) h = 128;
+    uint8_t pix[16 * 128];
+    memset(pix, 0, sizeof pix);
+    for (int y = 0; y < h && data; y++) {
+        uint16_t p0 = (uint16_t)rd16(data + 4 + 4 * (uint32_t)y), p1 = (uint16_t)rd16(data + 6 + 4 * (uint32_t)y);
+        for (int x = 0; x < 16; x++) pix[y * 16 + x] = (uint8_t)(((p0 >> (15 - x)) & 1) | (((p1 >> (15 - x)) & 1) << 1));
+    }
+    wr32(ss, data);
+    pointer_sprite0(pix, h, 1);
+    return 0;
+}
+static uint32_t g_MoveSprite(M68K *c) {
+    if (c->a[1]) { wr16(c->a[1] + 6, (uint16_t)c->d[0]); wr16(c->a[1] + 8, (uint16_t)c->d[1]); }
+    return 0;
+}
+
 /* BitMapScale(BitScaleArgs): nearest pixel, as the blitter-free scaler does */
 static uint32_t g_BitMapScale(M68K *c) {
     uint32_t a = c->a[0];
@@ -1219,7 +1268,8 @@ static const NativeEntry gfx_natives[] = {
     { "ReleasePen", g_ReleasePen }, { "SetMaxPen", g_SetMaxPen }, { "GetVPModeID", g_GetVPModeID },
     { "FindDisplayInfo", g_FindDisplayInfo }, { "NextDisplayInfo", g_NextDisplayInfo },
     { "GetDisplayInfoData", g_GetDisplayInfoData }, { "ModeNotAvailable", g_ModeNotAvailable }, { "BestModeIDA", g_BestModeIDA },
-    { "BitMapScale", g_BitMapScale }, { "ScalerDiv", g_ScalerDiv },
+    { "BitMapScale", g_BitMapScale }, { "GetSprite", g_GetSprite }, { "FreeSprite", g_FreeSprite },
+    { "ChangeSprite", g_ChangeSprite }, { "MoveSprite", g_MoveSprite }, { "ScalerDiv", g_ScalerDiv },
     { "WriteChunkyPixels", g_WriteChunkyPixels }, { "WritePixelArray8", g_WritePixelArray8 },
     { "ReadPixelArray8", g_ReadPixelArray8 }, { "WritePixelLine8", g_WritePixelLine8 },
     { "ReadPixelLine8", g_ReadPixelLine8 },
