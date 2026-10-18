@@ -112,8 +112,8 @@ int main(void)
     struct NewGadget ng;
     struct Window *win;
     APTR vi;
-    ULONG cur_id = PAL_MONITOR_ID | HIRES_KEY;
-    UWORD cur_depth = 3;
+    ULONG cur_id = 0x50031000;                     /* the default: AmigaMac 1280x720 */
+    UWORD cur_depth = 8;
     int sel = 0, depth_idx, top, i, W = 400, H = 160, action = 0;
 
     if (!scr) return 20;

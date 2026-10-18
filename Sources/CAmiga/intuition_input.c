@@ -530,7 +530,7 @@ static int menu_shortcut(NWindow *w, int ch) {
 
 /* ---- the input task ------------------------------------------------------------ */
 
-enum { DRAG_NONE, DRAG_MOVE, DRAG_SIZE, DRAG_CLOSE, DRAG_DEPTH, DRAG_GADGET, DRAG_PROP, DRAG_CUSTOM };
+enum { DRAG_NONE, DRAG_MOVE, DRAG_SIZE, DRAG_CLOSE, DRAG_DEPTH, DRAG_GADGET, DRAG_PROP, DRAG_CUSTOM, DRAG_ZOOM };
 static int drag;
 static NWindow *drag_win;
 static uint32_t drag_gad;
@@ -707,6 +707,7 @@ static void handle_button(NScreen *s, int x, int y, int code) {
         if (!(fl & WFLG_BORDERLESS) && ly < bt) {
             if (cw && lx < cw) { drag = DRAG_CLOSE; return; }
             if (dw && lx >= w->w - dw) { drag = DRAG_DEPTH; return; }
+            if (zoom_width(w) && lx >= w->w - dw - zoom_width(w) && lx < w->w - dw) { drag = DRAG_ZOOM; return; }
             if (fl & WFLG_DRAGBAR) { drag = DRAG_MOVE; drag_dx = lx; drag_dy = ly; return; }
         }
         if ((fl & WFLG_SIZEGADGET) && lx >= w->w - 18 && ly >= w->h - 10) {
@@ -747,6 +748,9 @@ static void handle_button(NScreen *s, int x, int y, int code) {
             if (lx >= w->w - dw && lx < w->w && ly >= 0 && ly < bt) {
                 if (w->s->wins == w) win_to_back(w); else win_to_front(w);
             }
+            return;
+        case DRAG_ZOOM:
+            if (lx >= w->w - dw - zoom_width(w) && lx < w->w - dw && ly >= 0 && ly < bt) win_zip(w);
             return;
         case DRAG_MOVE: case DRAG_SIZE: return;
         case DRAG_PROP: {

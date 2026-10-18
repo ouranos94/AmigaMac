@@ -2607,6 +2607,11 @@ void dos_init(const char *sysdir) {
     assign_set("RAM", ram_dir);
     assign_set("Mac", "/");
     static const char *dirs[] = { "C", "Libs", "Devs", "S", "L", "Fonts", "Prefs", "Utilities", "Tools", "Locale" };
+    static const char *drawers[] = { "System", "Storage", "WBStartup", "Expansion", "Trashcan" };   /* no assign */
+    for (unsigned i = 0; i < sizeof drawers / sizeof *drawers; i++) {
+        snprintf(p, sizeof p, "%s/%s", sys_dir, drawers[i]);
+        mkdir(p, 0755);
+    }
     for (unsigned i = 0; i < sizeof dirs / sizeof *dirs; i++) {
         snprintf(p, sizeof p, "%s/%s", sys_dir, dirs[i]);
         mkdir(p, 0755);
@@ -2615,7 +2620,7 @@ void dos_init(const char *sysdir) {
     snprintf(p, sizeof p, "%s/T", ram_dir); mkdir(p, 0755); assign_set("T", p);
     snprintf(p, sizeof p, "%s/Env", ram_dir); mkdir(p, 0755); assign_set("ENV", p);
     snprintf(p, sizeof p, "%s/Prefs/Env-Archive", sys_dir); mkdir(p, 0755); assign_set("ENVARC", p);
-    /* as the Startup-Sequence's "Copy ENVARC: ENV:": preferences only "used" last until restart */
+    /* as the Startup-Sequence's "Copy ENVARC: ENV:": preferences (and default icons) of ENVARC:Sys */
     {
         char es[1100], as[1100], f1[1400], f2[1400];
         snprintf(es, sizeof es, "%s/Env/Sys", ram_dir);
@@ -2624,11 +2629,11 @@ void dos_init(const char *sysdir) {
         DIR *d = opendir(es);
         struct dirent *e;
         while (d && (e = readdir(d)))
-            if (strstr(e->d_name, ".prefs")) { snprintf(f1, sizeof f1, "%s/%s", es, e->d_name); remove(f1); }
+            if (strstr(e->d_name, ".prefs") || strstr(e->d_name, ".info")) { snprintf(f1, sizeof f1, "%s/%s", es, e->d_name); remove(f1); }
         if (d) closedir(d);
         d = opendir(as);
         while (d && (e = readdir(d))) {
-            if (!strstr(e->d_name, ".prefs")) continue;
+            if (!strstr(e->d_name, ".prefs") && !strstr(e->d_name, ".info")) continue;
             snprintf(f1, sizeof f1, "%s/%s", as, e->d_name);
             snprintf(f2, sizeof f2, "%s/%s", es, e->d_name);
             FILE *in = fopen(f1, "rb"), *out = in ? fopen(f2, "wb") : 0;

@@ -8,12 +8,16 @@
  *   [ULONG (n+1)*4, then n x (ULONG len + string)] if do_ToolTypes
  *   [ULONG len + ToolWindow]   if do_ToolWindow
  *   [ULONG dd_Flags, UWORD dd_ViewModes] if drawer data and revision >= 1
- * Anything after that (newer colour icon formats) is ignored.
+ * Then, from AmigaOS 3.5 on, colour images: an IFF FORM ICON with a FACE chunk
+ * (size, flags) and one or two IMAG chunks (normal, selected: pens, RLE-packed,
+ * and a palette). Those are kept natively, next to the DiskObject, raw too so
+ * that PutDiskObject writes them back.
  * A loaded DiskObject is one AllocVec block, so FreeDiskObject is FreeVec. */
 #include "wb.h"
 #include "ndk_offsets.h"
 #include "amiga.h"
 #include "icons_default.h"
+#include "intui.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +84,118 @@ static uint32_t put_string(uint32_t *at, Rd *r) {
     return a;
 }
 
+/* ---- colour icons (FORM ICON) -------------------------------------------------------- */
+
+typedef struct ColorIcon {
+    uint32_t dobj;
+    int w, h, frameless;
+    int nimg;
+    uint8_t *pix[2];                /* pens of each image, w x h */
+    uint32_t pal[2][256];           /* their palettes, 0x00RRGGBB */
+    int ncol[2], trans[2];          /* colours, transparent pen (-1 none) */
+    uint8_t *raw;                   /* the FORM as read */
+    size_t rawlen;
+    int map_screen;                 /* pens mapped for this screen (id) */
+    int16_t map[2][256];
+    struct ColorIcon *next;
+} ColorIcon;
+static ColorIcon *colour_icons;
+
+static ColorIcon *colour_of(uint32_t dobj) {
+    for (ColorIcon *c = colour_icons; c; c = c->next) if (c->dobj == dobj) return c;
+    return 0;
+}
+static void colour_free(uint32_t dobj) {
+    for (ColorIcon **pp = &colour_icons; *pp; pp = &(*pp)->next)
+        if ((*pp)->dobj == dobj) {
+            ColorIcon *c = *pp;
+            *pp = c->next;
+            free(c->pix[0]); free(c->pix[1]); free(c->raw); free(c);
+            return;
+        }
+}
+
+/* the packed form: a bit stream; a control byte n < 128 copies n+1 values,
+   n > 128 repeats the next value 257-n times; values are `bits` wide */
+typedef struct { const uint8_t *p; size_t len, bit; } Bits;
+static int get_bits(Bits *b, int n) {
+    int v = 0;
+    for (int i = 0; i < n; i++) {
+        if (b->bit >= b->len * 8) return -1;
+        v = v << 1 | ((b->p[b->bit >> 3] >> (7 - (b->bit & 7))) & 1);
+        b->bit++;
+    }
+    return v;
+}
+static int unpack(const uint8_t *src, size_t len, int packed, int bits, uint8_t *out, int count) {
+    if (!packed) {
+        if ((size_t)count > len) return 0;
+        memcpy(out, src, (size_t)count);
+        return 1;
+    }
+    Bits b = { src, len, 0 };
+    int k = 0;
+    while (k < count) {
+        int ctl = get_bits(&b, 8);
+        if (ctl < 0) return 0;
+        if (ctl < 128) {
+            for (int i = 0; i <= ctl && k < count; i++) { int v = get_bits(&b, bits); if (v < 0) return 0; out[k++] = (uint8_t)v; }
+        } else if (ctl > 128) {
+            int v = get_bits(&b, bits);
+            if (v < 0) return 0;
+            for (int i = 0; i < 257 - ctl && k < count; i++) out[k++] = (uint8_t)v;
+        }
+    }
+    return 1;
+}
+
+static void parse_colour(uint32_t dobj, const uint8_t *p, size_t len) {
+    /* the FORM may follow at any even offset of the tail */
+    size_t at = 0;
+    while (at + 12 <= len && !(memcmp(p + at, "FORM", 4) == 0 && memcmp(p + at + 8, "ICON", 4) == 0)) at++;
+    if (at + 12 > len) return;
+    size_t flen = be32(p + at + 4) + 8;
+    if (at + flen > len) flen = len - at;
+    ColorIcon *c = calloc(1, sizeof *c);
+    c->dobj = dobj;
+    c->trans[0] = c->trans[1] = -1;
+    c->map_screen = -1;
+    for (size_t q = at + 12; q + 8 <= at + flen;) {
+        size_t sz = be32(p + q + 4);
+        const uint8_t *d = p + q + 8;
+        if (q + 8 + sz > at + flen) break;
+        if (!memcmp(p + q, "FACE", 4) && sz >= 6) {
+            c->w = d[0] + 1; c->h = d[1] + 1; c->frameless = d[2] & 1;
+        } else if (!memcmp(p + q, "IMAG", 4) && sz >= 10 && c->w && c->nimg < 2) {
+            int k = c->nimg, flags = d[2], depth = d[5];
+            int isize = (int)be16(d + 6) + 1, psize = (int)be16(d + 8) + 1;
+            if (depth < 1 || depth > 8 || 10 + (size_t)isize > sz) break;
+            c->pix[k] = calloc((size_t)(c->w * c->h), 1);
+            if (!unpack(d + 10, (size_t)isize, d[3] == 1, depth, c->pix[k], c->w * c->h)) { free(c->pix[k]); c->pix[k] = 0; break; }
+            if (flags & 1) c->trans[k] = d[0];
+            if (flags & 2) {
+                uint8_t rgb[768];
+                int n = d[1] + 1;
+                if (10 + (size_t)isize + (size_t)psize <= sz && unpack(d + 10 + isize, (size_t)psize, d[4] == 1, 8, rgb, n * 3)) {
+                    c->ncol[k] = n;
+                    for (int i = 0; i < n; i++) c->pal[k][i] = (uint32_t)rgb[i * 3] << 16 | (uint32_t)rgb[i * 3 + 1] << 8 | rgb[i * 3 + 2];
+                }
+            } else if (k == 1) {                                     /* the selected image shares the palette */
+                c->ncol[1] = c->ncol[0];
+                memcpy(c->pal[1], c->pal[0], sizeof c->pal[0]);
+            }
+            c->nimg++;
+        }
+        q += 8 + ((sz + 1) & ~(size_t)1);
+    }
+    if (!c->nimg || !c->ncol[0]) { free(c->pix[0]); free(c->pix[1]); free(c); return; }
+    c->raw = malloc(flen);
+    memcpy(c->raw, p + at, flen);
+    c->rawlen = flen;
+    c->next = colour_icons;
+    colour_icons = c;
+}
+
 static uint32_t parse_info(const uint8_t *buf, size_t len) {
     Rd r = { buf, len, 0, 0 };
     const uint8_t *hdr = take(&r, DiskObject_SIZEOF);
@@ -130,7 +246,7 @@ static uint32_t parse_info(const uint8_t *buf, size_t len) {
     if (r.bad) {
         /* a truncated tail: keep what was read, drop the broken parts */
         if (!rd32(dobj + DiskObject_do_ToolWindow)) wr32(dobj + DiskObject_do_ToolWindow, 0);
-    }
+    } else if (r.pos < len) parse_colour(dobj, buf + r.pos, len - r.pos);
     return dobj;
 }
 
@@ -191,6 +307,8 @@ static uint8_t *serialize(uint32_t dobj, size_t *len) {
     }
     if (twin) w_string(&w, twin);
     if (dd) { w32(&w, rd32(dd + DrawerData_dd_Flags)); w16(&w, rd16(dd + DrawerData_dd_ViewModes)); }
+    ColorIcon *ci = colour_of(dobj);
+    if (ci) w_bytes(&w, ci->raw, ci->rawlen);                       /* the colour images, as they were */
     *len = w.len;
     return w.p;
 }
@@ -232,7 +350,7 @@ int icon_put(const char *name, uint32_t dobj) {
     return 1;
 }
 
-void icon_free(uint32_t dobj) { if (dobj) exec_freevec(dobj); }
+void icon_free(uint32_t dobj) { if (dobj) { colour_free(dobj); exec_freevec(dobj); } }
 
 static uint32_t dup_icon(uint32_t dobj) {
     size_t len;
@@ -242,10 +360,23 @@ static uint32_t dup_icon(uint32_t dobj) {
     return d;
 }
 
-/* default icons are built as .info images and parsed like any other */
+/* a default icon from ENV:Sys/def_<name>.info, as icon.library does */
+uint32_t icon_env_default(const char *name) {
+    char n[64];
+    snprintf(n, sizeof n, "ENV:Sys/def_%s", name);
+    return icon_get(n);
+}
+
+/* default icons: ENV:Sys/def_*.info, else built-in .info images parsed like any other */
 static uint32_t make_default(int type) {
     const char *nm = type == WBDISK || type == WBDEVICE || type == WBKICK ? "disk" : type == WBDRAWER ? "drawer" :
                      type == WBTOOL ? "tool" : type == WBGARBAGE ? "trashcan" : "project";
+    uint32_t env = icon_env_default(nm);
+    if (env) {
+        wr32(env + DiskObject_do_CurrentX, NO_ICON_POSITION);
+        wr32(env + DiskObject_do_CurrentY, NO_ICON_POSITION);
+        return env;
+    }
     const DefIcon *di = default_icons;
     while (di->name && strcmp(di->name, nm)) di++;
     if (!di->name) return 0;
@@ -271,8 +402,7 @@ static uint32_t make_default(int type) {
     if (drawer) {
         uint8_t dd[OldDrawerData_SIZEOF];
         memset(dd, 0, sizeof dd);
-        /* NewWindow: 50,30 400x100, pens -1 */
-        dd[0] = 0; dd[1] = 50; dd[2] = 0; dd[3] = 30; dd[4] = 400 >> 8; dd[5] = 400 & 0xFF; dd[7] = 100;
+        /* NewWindow: no box (the Workbench places the drawer itself), pens -1 */
         dd[8] = 0xFF; dd[9] = 0xFF;
         w_bytes(&w, dd, sizeof dd);
     }
@@ -315,6 +445,9 @@ uint32_t icon_get_new(const char *name) {
 }
 
 void icon_size(uint32_t dobj, int *w, int *h) {
+    ColorIcon *ci = colour_of(dobj);
+    NScreen *ws = workbench_screen(0);
+    if (ci && (!ws || ws->depth >= 4)) { *w = ci->w; *h = ci->h; return; }
     uint32_t g = dobj + GADGET_OFF, img = rd32(g + Gadget_GadgetRender);
     *w = (int16_t)rd16(g + Gadget_Width);
     *h = (int16_t)rd16(g + Gadget_Width + 2);
@@ -328,6 +461,36 @@ void icon_size(uint32_t dobj, int *w, int *h) {
     if (*h < 1) *h = 1;
 }
 
+/* a colour icon on a screen with enough pens: each colour gets one (exact if
+   free, else the nearest); without a selected image, a darker copy */
+static int draw_colour(uint32_t rp, ColorIcon *ci, int x, int y, int selected) {
+    NScreen *s = workbench_screen(0);
+    BM b;
+    if (!s || s->depth < 4 || !bm_load(rd32(rp + RastPort_BitMap), &b)) return 0;
+    int k = selected && ci->nimg > 1 ? 1 : 0, darken = selected && ci->nimg < 2;
+    int m = k + darken;                                         /* map 2: the darker copy of image 0 */
+    if (ci->map_screen != s->id) { ci->map_screen = s->id; memset(ci->map, 0xFF, sizeof ci->map); }
+    int16_t *map = m < 2 ? ci->map[m] : 0;
+    static int16_t dark[256];
+    if (darken) {                                               /* mapped each time: rare */
+        for (int i = 0; i < ci->ncol[0]; i++) {
+            uint32_t c = ci->pal[0][i];
+            uint32_t r = (c >> 16 & 0xFF) * 3 / 4, g = (c >> 8 & 0xFF) * 3 / 4, bl = (c & 0xFF) * 3 / 4;
+            dark[i] = (int16_t)screen_obtain_pen(s, r << 16 | g << 8 | bl);
+        }
+        map = dark;
+    }
+    const uint8_t *pix = ci->pix[k];
+    for (int j = 0; j < ci->h; j++)
+        for (int i = 0; i < ci->w; i++) {
+            int v = pix[j * ci->w + i];
+            if (v == ci->trans[k] || v >= ci->ncol[k]) continue;
+            if (map[v] < 0) map[v] = (int16_t)screen_obtain_pen(s, ci->pal[k][v]);
+            bm_pixel(&b, x + i, y + j, map[v], JAM1, 0xFF);
+        }
+    return 1;
+}
+
 /* image at x,y, label centred underneath */
 void icon_draw(uint32_t rp, uint32_t dobj, const char *label, int x, int y, int selected, const uint16_t *pens) {
     uint32_t g = dobj + GADGET_OFF;
@@ -335,7 +498,9 @@ void icon_draw(uint32_t rp, uint32_t dobj, const char *label, int x, int y, int 
     int hl = rd16(g + Gadget_Flags) & 3;
     int w, h;
     icon_size(dobj, &w, &h);
-    if (selected && sel && hl == 2) draw_image(rp, sel, x, y, 1);
+    ColorIcon *ci = colour_of(dobj);
+    if (ci && draw_colour(rp, ci, x, y, selected)) ;
+    else if (selected && sel && hl == 2) draw_image(rp, sel, x, y, 1);
     else if (img) {
         draw_image(rp, img, x, y, 0);
         if (selected) {

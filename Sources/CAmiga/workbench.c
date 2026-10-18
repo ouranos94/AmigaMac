@@ -21,14 +21,17 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
+#include <time.h>
 #include <unistd.h>
 
 uint32_t WorkbenchBase;
 extern uint32_t SysBase, DOSBase;
 
 #define IDCMP_WB (IDCMP_CLOSEWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MOUSEMOVE | IDCMP_MENUPICK | IDCMP_NEWSIZE | \
-                  IDCMP_GADGETUP | IDCMP_GADGETDOWN | IDCMP_ACTIVEWINDOW | IDCMP_VANILLAKEY)
+                  IDCMP_GADGETUP | IDCMP_GADGETDOWN | IDCMP_ACTIVEWINDOW | IDCMP_VANILLAKEY | IDCMP_INTUITICKS)
 #define SIGF_REQ (1u << 15)                       /* SIGBREAKF_CTRL_F: queued requests */
+#define SIGF_CLOCK (1u << 14)                     /* SIGBREAKF_CTRL_E: the one-second timer */
 #define NO_POS 0x80000000u
 #define AMTYPE_APPWINDOW 7
 #define AMTYPE_APPICON 8
@@ -52,9 +55,13 @@ typedef struct WBWin {
     uint32_t win;
     int backdrop;
     char path[600];                 /* Amiga path of the drawer, "" for the desktop */
+    uint32_t tbuf;                  /* a volume window's title: name and how full it is */
     WIcon *icons;
-    int sy, cw, ch;                 /* vertical scroll, content size */
-    uint32_t prop, propinfo;
+    int sx, sy, cw, ch;             /* scroll position, content size */
+    uint32_t prop, propinfo;        /* the vertical scroller */
+    uint32_t hprop, hpropinfo;      /* the horizontal one */
+    uint32_t arrows[4];             /* up, down, left, right */
+    int held;                       /* the arrow held down, 0 none */
     uint32_t rp;                    /* 68k RastPort for off-screen drawing */
     int show_all, by_name;
     Arena A;
@@ -88,6 +95,8 @@ static struct {
     int mx0, my0, mx1, my1;          /* screen coordinates */
     WIcon *lasticon;
     uint32_t lsecs, lmicros;
+    uint32_t bartitle;               /* the screen bar's text, rewritten every second */
+    int ticks;
 } wb;
 
 static void wb_message(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -95,6 +104,8 @@ static void open_desktop(void);
 static void build_menus(void);
 static void queue(int what, const char *name);
 static int selected_icons(WBWin *w, WIcon **out, int max);
+static void redraw(WBWin *w);
+static void update_volume_title(WBWin *w);
 
 /* ---- paths ------------------------------------------------------------------------- */
 
@@ -258,16 +269,18 @@ static void read_desktop(WBWin *w) {
     int y = 4;
     for (int i = 0; i < 3; i++) {
         uint32_t d = icon_get(vols[i]);
+        if (!d && i == 1) d = icon_env_default("RAM");
+        if (!d && i == 2) d = icon_env_default("Mac");
         if (!d) d = icon_default(WBDISK);
         WIcon *ic = add_icon(w, vols[i], vols[i], volume_label(vols[i]), d, WBDISK);
-        if (!ic->fixed) { ic->x = wb.s->w - 60 - ic->w / 2; ic->y = y; ic->fixed = 1; }
+        if (!ic->fixed) { ic->x = 40 - ic->w / 2; ic->y = y; ic->fixed = 1; }
         y += ic->h + 22;
     }
     for (AppObj *a = wb.apps; a; a = a->next) {
         if (a->kind != AMTYPE_APPICON) continue;
         WIcon *ic = add_icon(w, a->text, "", a->text, a->dobj, WBAPPICON);
         ic->appicon = a->handle;
-        if (!ic->fixed) { ic->x = wb.s->w - 60 - ic->w / 2; ic->y = y; ic->fixed = 1; }
+        if (!ic->fixed) { ic->x = 40 - ic->w / 2; ic->y = y; ic->fixed = 1; }
         y += ic->h + 22;
     }
 }
@@ -372,6 +385,8 @@ static void layout(WBWin *w) {
     }
     if (w->sy > w->ch - ih) w->sy = w->ch - ih;
     if (w->sy < 0) w->sy = 0;
+    if (w->sx > w->cw - iw) w->sx = w->cw - iw;
+    if (w->sx < 0) w->sx = 0;
 }
 
 static void update_prop(WBWin *w) {
@@ -383,6 +398,148 @@ static void update_prop(WBWin *w) {
     wr16(pi + PropInfo_VertBody, total <= ih ? 0xFFFF : (uint32_t)((long)ih * 0xFFFF / total));
     wr16(pi + PropInfo_VertPot, range <= 0 ? 0 : (uint32_t)((long)w->sy * 0xFFFF / range));
     lib_call(wb.c, IntuitionBase, "intuition", "RefreshGList", w->prop, w->win, 0, 1);
+    if (!w->hprop) return;
+    pi = w->hpropinfo;
+    total = w->cw; range = total - iw;
+    wr16(pi + PropInfo_HorizBody, total <= iw ? 0xFFFF : (uint32_t)((long)iw * 0xFFFF / total));
+    wr16(pi + PropInfo_HorizPot, range <= 0 ? 0 : (uint32_t)((long)w->sx * 0xFFFF / range));
+    lib_call(wb.c, IntuitionBase, "intuition", "RefreshGList", w->hprop, w->win, 0, 1);
+}
+
+/* the scrollers moved: follow them */
+static void from_props(WBWin *w) {
+    int bl, bt, iw, ih, changed = 0;
+    inner(w, &bl, &bt, &iw, &ih);
+    int range = w->ch - ih, sy = range > 0 ? (int)((long)rd16(w->propinfo + PropInfo_VertPot) * range / 0xFFFF) : 0;
+    if (sy != w->sy) { w->sy = sy; changed = 1; }
+    if (w->hprop) {
+        range = w->cw - iw;
+        int sx = range > 0 ? (int)((long)rd16(w->hpropinfo + PropInfo_HorizPot) * range / 0xFFFF) : 0;
+        if (sx != w->sx) { w->sx = sx; changed = 1; }
+    }
+    if (changed) redraw(w);
+}
+
+/* an arrow: one step that way */
+static void scroll_step(WBWin *w, int which) {
+    int bl, bt, iw, ih;
+    inner(w, &bl, &bt, &iw, &ih);
+    int ox = w->sx, oy = w->sy;
+    if (which == 2) w->sy -= 12; else if (which == 3) w->sy += 12;
+    else if (which == 4) w->sx -= 16; else if (which == 5) w->sx += 16;
+    if (w->sy > w->ch - ih) w->sy = w->ch - ih;
+    if (w->sy < 0) w->sy = 0;
+    if (w->sx > w->cw - iw) w->sx = w->cw - iw;
+    if (w->sx < 0) w->sx = 0;
+    if (ox != w->sx || oy != w->sy) { update_prop(w); redraw(w); }
+}
+
+/* ---- the backdrop picture (WBPattern prefs) -------------------------------------------- */
+
+static struct { int sid, w, h; uint8_t *pens; } bd = { -1, 0, 0, 0 };
+
+static uint32_t rbe32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+static const uint8_t *iff_chunk(const uint8_t *b, size_t len, const char *id, uint32_t *size) {
+    for (size_t pos = 12; pos + 8 <= len;) {
+        uint32_t sz = rbe32(b + pos + 4);
+        if (!memcmp(b + pos, id, 4) && pos + 8 + sz <= len) { *size = sz; return b + pos + 8; }
+        pos += 8 + ((sz + 1) & ~1u);
+    }
+    return 0;
+}
+static uint8_t *read_whole(const char *apath, size_t *len) {
+    char hp[2048];
+    if (!host_of(apath, hp, sizeof hp)) return 0;
+    FILE *f = fopen(hp, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *b = n > 0 && n < (32L << 20) ? malloc((size_t)n) : 0;
+    if (b && fread(b, 1, (size_t)n, f) != (size_t)n) { free(b); b = 0; }
+    fclose(f);
+    *len = (size_t)n;
+    return b;
+}
+
+/* an ILBM as pens and a palette */
+static uint8_t *load_ilbm_pens(const char *apath, int *w, int *h, uint32_t pal[256], int *ncol) {
+    size_t len;
+    uint8_t *b = read_whole(apath, &len), *out = 0;
+    uint32_t sz;
+    if (!b || len < 12 || memcmp(b, "FORM", 4) || memcmp(b + 8, "ILBM", 4)) { free(b); return 0; }
+    const uint8_t *hd = iff_chunk(b, len, "BMHD", &sz), *cm, *body;
+    if (!hd || sz < 20) { free(b); return 0; }
+    int W = hd[0] << 8 | hd[1], H = hd[2] << 8 | hd[3], depth = hd[8], masking = hd[9], comp = hd[10];
+    if (W <= 0 || H <= 0 || W > 4096 || H > 4096 || depth < 1 || depth > 8) { free(b); return 0; }
+    *ncol = 0;
+    if ((cm = iff_chunk(b, len, "CMAP", &sz))) {
+        *ncol = (int)(sz / 3) > 256 ? 256 : (int)(sz / 3);
+        for (int i = 0; i < *ncol; i++) pal[i] = (uint32_t)cm[i * 3] << 16 | (uint32_t)cm[i * 3 + 1] << 8 | cm[i * 3 + 2];
+    }
+    if (!(body = iff_chunk(b, len, "BODY", &sz)) || !*ncol) { free(b); return 0; }
+    out = calloc((size_t)W * H, 1);
+    int rowbytes = (W + 15) / 16 * 2, planes = depth + (masking == 1);
+    uint8_t row[1024];
+    const uint8_t *p = body, *end = body + sz;
+    for (int y = 0; y < H; y++)
+        for (int pl = 0; pl < planes; pl++) {
+            int n = 0;
+            if (comp == 1)
+                while (n < rowbytes && p < end) {
+                    int8_t ctl = (int8_t)*p++;
+                    if (ctl >= 0) { for (int k = 0; k <= ctl && p < end && n < rowbytes; k++) row[n++] = *p++; }
+                    else if (ctl != -128) { uint8_t v = p < end ? *p++ : 0; for (int k = 0; k <= -ctl && n < rowbytes; k++) row[n++] = v; }
+                }
+            else for (; n < rowbytes; n++) row[n] = p < end ? *p++ : 0;
+            if (pl < depth && rowbytes <= (int)sizeof row)
+                for (int x = 0; x < W; x++) if ((row[x >> 3] >> (7 - (x & 7))) & 1) out[y * W + x] |= (uint8_t)(1 << pl);
+        }
+    free(b);
+    *w = W; *h = H;
+    return out;
+}
+
+/* the desktop's picture, composed at the screen's size in the screen's pens */
+static void backdrop_build(NScreen *s) {
+    free(bd.pens);
+    bd.pens = 0;
+    bd.sid = s->id;
+    if (s->depth < 4) return;
+    size_t len;
+    uint8_t *pr = read_whole("ENV:Sys/wbpattern.prefs", &len);
+    if (!pr) return;
+    char name[512] = "";
+    int flags = 0;
+    uint32_t sz;
+    const uint8_t *c = len >= 12 && !memcmp(pr, "FORM", 4) && !memcmp(pr + 8, "PREF", 4) ? iff_chunk(pr, len, "PTRN", &sz) : 0;
+    if (c && sz >= 24 && (c[16] << 8 | c[17]) == 0 /* WBP_ROOT */) {
+        flags = c[18] << 8 | c[19];
+        int dl = c[22] << 8 | c[23];
+        if (!(flags & 1) && dl > 0 && 24 + (uint32_t)dl <= sz) snprintf(name, sizeof name, "%.*s", dl, (const char *)c + 24);
+    }
+    free(pr);
+    uint32_t pal[256];
+    int W, H, ncol;
+    uint8_t *src = name[0] ? load_ilbm_pens(name, &W, &H, pal, &ncol) : 0;
+    if (!src) return;
+    int16_t map[256];
+    for (int i = 0; i < 256; i++) map[i] = -1;
+    bd.w = s->w; bd.h = s->h;
+    bd.pens = malloc((size_t)bd.w * bd.h);
+    int place = flags & 0x3000;
+    for (int y = 0; y < bd.h; y++)
+        for (int x = 0; x < bd.w; x++) {
+            int sx, sy;
+            if (place >= 0x2000) { sx = x * W / bd.w; sy = y * H / bd.h; }                 /* scaled */
+            else if (place == 0x1000) { sx = x - (bd.w - W) / 2; sy = y - (bd.h - H) / 2; } /* centred */
+            else { sx = x % W; sy = y % H; }                                              /* tiled */
+            int v = sx >= 0 && sy >= 0 && sx < W && sy < H ? src[sy * W + sx] : -1;
+            if (v < 0 || v >= ncol) { bd.pens[y * bd.w + x] = (uint8_t)desktop_pen(s); continue; }
+            if (map[v] < 0) map[v] = (int16_t)screen_obtain_pen(s, pal[v]);
+            bd.pens[y * bd.w + x] = (uint8_t)map[v];
+        }
+    free(src);
 }
 
 static void redraw(WBWin *w) {
@@ -392,7 +549,21 @@ static void redraw(WBWin *w) {
     NScreen *s = wb.s;
     uint32_t bm = gfx_alloc_bitmap(iw, ih, s->depth, 1);
     wr32(w->rp + RastPort_BitMap, bm);
-    rp_fill(w->rp, 0, 0, iw - 1, ih - 1, s->pens[BACKGROUNDPEN], 0);
+    rp_fill(w->rp, 0, 0, iw - 1, ih - 1, w->backdrop ? desktop_pen(s) : s->pens[BACKGROUNDPEN], 0);
+    if (w->backdrop) {                                          /* the backdrop picture, if any */
+        if (bd.sid != s->id) backdrop_build(s);
+        BM tb;
+        int ox = (int16_t)rd16(w->win + Window_LeftEdge) + bl, oy = (int16_t)rd16(w->win + Window_TopEdge) + bt;
+        if (bd.pens && bm_load(bm, &tb))
+            for (int y = 0; y < ih; y++) {
+                int sy = oy + y;
+                if (sy < 0 || sy >= bd.h) continue;
+                for (int x = 0; x < iw; x++) {
+                    int sx = ox + x;
+                    if (sx >= 0 && sx < bd.w) bm_pixel(&tb, x, y, bd.pens[sy * bd.w + sx], JAM1, 0xFF);
+                }
+            }
+    }
     if (w->by_name && !w->backdrop) {
         for (WIcon *ic = w->icons; ic; ic = ic->next) {
             int y = ic->y - w->sy;
@@ -415,8 +586,8 @@ static void redraw(WBWin *w) {
         for (WIcon *ic = w->icons; ic; ic = ic->next) {
             int x0, y0, x1, y1;
             icon_bounds(ic, &x0, &y0, &x1, &y1);
-            if (y1 - w->sy < 0 || y0 - w->sy > ih) continue;
-            icon_draw(w->rp, ic->dobj, ic->label, ic->x, ic->y - w->sy, ic->selected, s->pens);
+            if (y1 - w->sy < 0 || y0 - w->sy > ih || x1 - w->sx < 0 || x0 - w->sx > iw) continue;
+            icon_draw(w->rp, ic->dobj, ic->label, ic->x - w->sx, ic->y - w->sy, ic->selected, s->pens);
         }
     }
     NWindow *nw = nwin_of(w->win);
@@ -482,6 +653,78 @@ static WBWin *find_drawer(const char *path) {
     return 0;
 }
 
+/* the drawer's scrollers: a vertical one in the right border, a horizontal one in
+   the bottom border, and their arrows grouped in the bottom right corner, as on 3.x */
+static uint32_t prop_gadget(WBWin *w, int id, int horiz, uint32_t *pinfo) {
+    uint32_t g = ar_alloc(&w->A, Gadget_SIZEOF + 4), pi = ar_alloc(&w->A, PropInfo_SIZEOF + 4), img = ar_alloc(&w->A, Image_SIZEOF);
+    int bt = rd8(w->win + Window_BorderTop), br = rd8(w->win + Window_BorderRight), bb = rd8(w->win + Window_BorderBottom);
+    int bl = rd8(w->win + Window_BorderLeft);
+    if (horiz) {
+        wr16(g + Gadget_LeftEdge, (uint32_t)(bl + 2));
+        wr16(g + Gadget_LeftEdge + 2, (uint32_t)(-bb + 3));
+        wr16(g + Gadget_Width, (uint32_t)(-bl - br - 36));
+        wr16(g + Gadget_Width + 2, (uint32_t)(bb - 4));
+        wr16(g + Gadget_Flags, GFLG_RELBOTTOM | GFLG_RELWIDTH);
+        wr16(g + Gadget_Activation, GACT_RELVERIFY | GACT_IMMEDIATE | GACT_FOLLOWMOUSE | 0x80 /* BOTTOMBORDER */);
+        wr16(pi + PropInfo_Flags, 0x1 | 0x2 | 0x10);         /* AUTOKNOB | FREEHORIZ | PROPNEWLOOK */
+    } else {
+        wr16(g + Gadget_LeftEdge, (uint32_t)(-br + 5));
+        wr16(g + Gadget_LeftEdge + 2, (uint32_t)(bt + 1));
+        wr16(g + Gadget_Width, (uint32_t)(br - 8));
+        wr16(g + Gadget_Width + 2, (uint32_t)(-bt - bb - 20));     /* above the two arrows */
+        wr16(g + Gadget_Flags, GFLG_RELRIGHT | GFLG_RELHEIGHT);
+        wr16(g + Gadget_Activation, GACT_RELVERIFY | GACT_IMMEDIATE | GACT_FOLLOWMOUSE | 0x10 /* RIGHTBORDER */);
+        wr16(pi + PropInfo_Flags, 0x1 | 0x4 | 0x10);         /* AUTOKNOB | FREEVERT | PROPNEWLOOK */
+    }
+    wr16(g + Gadget_GadgetType, GTYP_PROPGADGET);
+    wr32(g + Gadget_GadgetRender, img);
+    wr32(g + Gadget_SpecialInfo, pi);
+    wr16(g + Gadget_GadgetID, (uint32_t)id);
+    wr16(pi + PropInfo_VertBody, 0xFFFF);
+    wr16(pi + PropInfo_HorizBody, 0xFFFF);
+    *pinfo = pi;
+    return g;
+}
+
+static uint32_t arrow_gadget(WBWin *w, int id, uint32_t dri) {
+    static const int which[] = { 0x0B, 0x0D, 0x0A, 0x0C };      /* UP, DOWN, LEFT, RIGHT IMAGE */
+    int br = rd8(w->win + Window_BorderRight), bb = rd8(w->win + Window_BorderBottom);
+    uint32_t tags = ar_tags(&w->A, 0x80020000 + 0x0D /* SYSIA_Which */, which[id - 2], 0x80020000 + 0x18 /* SYSIA_DrawInfo */, dri, 0);
+    uint32_t img = lib_call(wb.c, IntuitionBase, "intuition", "NewObjectA", 0, ar_str(&w->A, "sysiclass"), tags);
+    if (!img) return 0;
+    int iw = (int16_t)rd16(img + Image_Width), ih = (int16_t)rd16(img + Image_Width + 2);
+    uint32_t g = ar_alloc(&w->A, Gadget_SIZEOF + 4);
+    int x, y, act;
+    if (id <= 3) { x = -br + 1; y = -bb - (id == 2 ? 2 : 1) * ih + 1; act = 0x10; }      /* right border */
+    else { x = -br - (id == 4 ? 2 : 1) * iw + 1; y = -bb + 1; act = 0x80; }             /* bottom border */
+    wr16(g + Gadget_LeftEdge, (uint32_t)x);
+    wr16(g + Gadget_LeftEdge + 2, (uint32_t)y);
+    wr16(g + Gadget_Width, (uint32_t)iw);
+    wr16(g + Gadget_Width + 2, (uint32_t)ih);
+    wr16(g + Gadget_Flags, GFLG_RELRIGHT | GFLG_RELBOTTOM | 0x4 /* GADGIMAGE */ | 0x2 /* GADGHIMAGE */);
+    wr16(g + Gadget_Activation, (uint32_t)(GACT_RELVERIFY | GACT_IMMEDIATE | act));
+    wr16(g + Gadget_GadgetType, 1 /* BOOLGADGET */);
+    wr32(g + Gadget_GadgetRender, img);
+    wr32(g + Gadget_SelectRender, img);
+    wr16(g + Gadget_GadgetID, (uint32_t)id);
+    return g;
+}
+
+static void add_scrollers(WBWin *w) {
+    uint32_t dri = lib_call(wb.c, IntuitionBase, "intuition", "GetScreenDrawInfo", wb.s->scr);
+    w->prop = prop_gadget(w, 1, 0, &w->propinfo);
+    w->hprop = prop_gadget(w, 6, 1, &w->hpropinfo);
+    uint32_t first = w->prop, last = w->prop;
+    wr32(last + Gadget_NextGadget, w->hprop);
+    last = w->hprop;
+    for (int id = 2; id <= 5; id++) {
+        w->arrows[id - 2] = arrow_gadget(w, id, dri);
+        if (w->arrows[id - 2]) { wr32(last + Gadget_NextGadget, w->arrows[id - 2]); last = w->arrows[id - 2]; }
+    }
+    lib_call(wb.c, IntuitionBase, "intuition", "AddGList", w->win, first, 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
+    lib_call(wb.c, IntuitionBase, "intuition", "RefreshGList", first, w->win, 0, 0xFFFFFFFFu);
+}
+
 static void open_drawer(const char *path, uint32_t dobj) {
     WBWin *w = find_drawer(path);
     if (w) {
@@ -494,7 +737,10 @@ static void open_drawer(const char *path, uint32_t dobj) {
     if (!host_of(path, hp, sizeof hp) || stat(hp, &st) || !S_ISDIR(st.st_mode)) { wb_message("Impossible d'ouvrir le tiroir\n%s", path); return; }
     NScreen *s = wb.s;
     static int cascade;
-    int x = 30 + (cascade % 8) * 16, y = 20 + (cascade % 8) * 10, W = 380, H = 130;
+    /* clear of the volume column on the left; larger on a large screen */
+    int big = s->w >= 1000 && s->h >= 600;
+    int W = big ? 520 : 380, H = big ? 210 : 130;
+    int x = (big ? 150 : 90) + (cascade % 8) * 20, y = (big ? 40 : 20) + (cascade % 8) * 14;
     cascade++;
     uint32_t dd = dobj ? rd32(dobj + DiskObject_do_DrawerData) : 0;
     if (dd) {
@@ -505,6 +751,10 @@ static void open_drawer(const char *path, uint32_t dobj) {
     if (y + H > s->h) y = s->h - H;
     w = calloc(1, sizeof *w);
     snprintf(w->path, sizeof w->path, "%s", path);
+    /* the zoom gadget's other box: the whole screen under the title bar */
+    uint32_t zoom = ar_alloc(&w->A, 8);
+    int sbar = rd8(s->scr + Screen_BarHeight) + 1;
+    wr16(zoom, 0); wr16(zoom + 2, (uint32_t)sbar); wr16(zoom + 4, (uint32_t)s->w); wr16(zoom + 6, (uint32_t)(s->h - sbar));
     w->show_all = 1;
     char title[600];
     size_t l = strlen(path);
@@ -513,30 +763,14 @@ static void open_drawer(const char *path, uint32_t dobj) {
     uint32_t tags = ar_tags(&w->A, WA_Left_, x, WA_Top_, y, WA_Width_, W, WA_Height_, H,
                             WA_Title_, ar_text(&w->A, title), WA_CustomScreen_, s->scr,
                             WA_DragBar_, 1, WA_DepthGadget_, 1, WA_CloseGadget_, 1, WA_SizeGadget_, 1,
+                            WA_SizeBRight_, 1, WA_SizeBBottom_, 1, WA_Zoom_, zoom,
                             WA_MinWidth_, 120, WA_MinHeight_, 60, WA_MaxWidth_, 0xFFFF, WA_MaxHeight_, 0xFFFF,
                             WA_ReportMouse_, 1, WA_Activate_, 1, 0);
     w->win = lib_call(wb.c, IntuitionBase, "intuition", "OpenWindowTagList", 0, tags);
     if (!w->win) { free(w); return; }
     attach(w);
-    /* a vertical scroller in the right border */
-    int bt = rd8(w->win + Window_BorderTop), br = rd8(w->win + Window_BorderRight);
-    uint32_t g = ar_alloc(&w->A, Gadget_SIZEOF + 4), pi = ar_alloc(&w->A, PropInfo_SIZEOF + 4), img = ar_alloc(&w->A, Image_SIZEOF);
-    wr16(g + Gadget_LeftEdge, (uint32_t)(-br + 5));
-    wr16(g + Gadget_LeftEdge + 2, (uint32_t)(bt + 1));
-    wr16(g + Gadget_Width, (uint32_t)(br - 8));
-    wr16(g + Gadget_Width + 2, (uint32_t)(-bt - 13));                 /* stop above the size gadget */
-    wr16(g + Gadget_Flags, GFLG_RELRIGHT | GFLG_RELHEIGHT);
-    wr16(g + Gadget_Activation, GACT_RELVERIFY | GACT_IMMEDIATE | GACT_FOLLOWMOUSE | 0x10 /* RIGHTBORDER */);
-    wr16(g + Gadget_GadgetType, GTYP_PROPGADGET);
-    wr32(g + Gadget_GadgetRender, img);
-    wr32(g + Gadget_SpecialInfo, pi);
-    wr16(g + Gadget_GadgetID, 1);
-    wr16(pi + PropInfo_Flags, 0x1 | 0x4 | 0x10);             /* AUTOKNOB | FREEVERT | PROPNEWLOOK */
-    wr16(pi + PropInfo_VertBody, 0xFFFF);
-    wr16(pi + PropInfo_HorizBody, 0xFFFF);
-    w->prop = g;
-    w->propinfo = pi;
-    lib_call(wb.c, IntuitionBase, "intuition", "AddGList", w->win, g, 0xFFFFFFFFu, 1, 0);
+    add_scrollers(w);
+    update_volume_title(w);
     read_drawer(w);
     relayout(w);
 }
@@ -761,7 +995,7 @@ enum {
     A_EXECUTE = 1, A_REDRAWALL, A_UPDATEALL, A_LASTMSG, A_ABOUT, A_QUIT,
     A_NEWDRAWER, A_PARENT, A_CLOSE, A_UPDATE, A_SELECTALL, A_CLEANUP, A_SHOWICONS, A_SHOWALL, A_BYICON, A_BYNAME,
     A_OPEN, A_COPY, A_RENAME, A_INFO, A_SNAPSHOT, A_DELETE,
-    A_RUNPROGRAM, A_RESET, A_NEWSHELL, A_EXTRACT, A_APPMENU = 1000
+    A_RUNPROGRAM, A_RESET, A_NEWSHELL, A_EXTRACT, A_EMPTYTRASH, A_APPMENU = 1000
 };
 
 typedef struct { int type; const char *label, *key; int flags, excl, action; } MDef;
@@ -798,6 +1032,7 @@ static void build_menus(void) {
         { 2, "Figer", "S", 0, 0, A_SNAPSHOT },
         { 2, 0, 0, 0, 0, 0 },
         { 2, "Supprimer...", "D", 0, 0, A_DELETE },
+        { 2, "Vider la corbeille", 0, 0, 0, A_EMPTYTRASH },
         { 1, "Outils", 0, 0, 0, 0 },
         { 2, "Lancer un programme...", "L", 0, 0, A_RUNPROGRAM },
         { 2, "Nouveau Shell", "W", 0, 0, A_NEWSHELL },
@@ -923,6 +1158,38 @@ static void do_copy(WBWin *w) {
         if (access(si, F_OK) == 0) copy_host_file(si, ti);
     }
     if (n) { read_drawer(w); relayout(w); }
+}
+
+/* a directory's contents, all of it */
+static void rm_tree(const char *hp, int self) {
+    DIR *d = opendir(hp);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char f[2600];
+        struct stat st;
+        snprintf(f, sizeof f, "%s/%s", hp, e->d_name);
+        if (!lstat(f, &st) && S_ISDIR(st.st_mode)) rm_tree(f, 1); else remove(f);
+    }
+    if (d) closedir(d);
+    if (self) rmdir(hp);
+}
+
+/* Empty Trash: what was dropped in the selected trashcan goes for good */
+static void empty_trash(WBWin *w) {
+    WIcon *sel[64];
+    int n = selected_icons(w, sel, 64), done = 0;
+    for (int i = 0; i < n; i++) {
+        if (sel[i]->type != WBGARBAGE) continue;
+        char hp[2048], q[300];
+        if (!host_of(sel[i]->path, hp, sizeof hp)) continue;
+        snprintf(q, sizeof q, "Vider %s ?\nSon contenu sera supprim\xc3\xa9 d\xc3\xa9" "finitivement.", sel[i]->label);
+        if (easy("Corbeille", q, "Vider|Annuler") != 1) continue;
+        rm_tree(hp, 0);
+        update_path(sel[i]->path);
+        done = 1;
+    }
+    if (!done && !n) wb_message("S\xc3\xa9lectionnez une corbeille,\npuis choisissez Vider la corbeille.");
 }
 
 static void do_rename(WBWin *w) {
@@ -1086,6 +1353,7 @@ static void menu_action(WBWin *w, int act) {
     case A_INFO: if (w) { n = selected_icons(w, sel, 256); for (int i = 0; i < n; i++) do_info(sel[i]); } break;
     case A_SNAPSHOT: if (w) do_snapshot(w); break;
     case A_DELETE: if (w && !w->backdrop) do_delete(w); break;
+    case A_EMPTYTRASH: if (w) empty_trash(w); break;
     case A_RUNPROGRAM: run_program(); break;
     case A_NEWSHELL: shell_run_background("NEWSHELL"); break;
     case A_EXTRACT: if (w) do_extract(w); break;
@@ -1126,7 +1394,7 @@ static WIcon *hit(WBWin *w, int mx, int my) {
     int bl, bt, iw, ih;
     inner(w, &bl, &bt, &iw, &ih);
     if (mx < bl || my < bt || mx >= bl + iw || my >= bt + ih) return 0;
-    int cx = mx - bl, cy = my - bt + w->sy;
+    int cx = mx - bl + w->sx, cy = my - bt + w->sy;
     WIcon *found = 0;
     for (WIcon *ic = w->icons; ic; ic = ic->next) {
         if (w->by_name && !w->backdrop) { if (cy >= ic->y && cy < ic->y + 9) found = ic; continue; }
@@ -1188,7 +1456,7 @@ static void show_drag(void) {
     inner(w, &bl, &bt, &iw, &ih);
     int dx = wb.mx1 - wb.mx0, dy = wb.my1 - wb.my0;
     for (WIcon *ic = w->icons; ic; ic = ic->next)
-        if (ic->selected) ov_icon(ic->dobj, ox + bl + ic->x + dx, oy + bt + ic->y - w->sy + dy);
+        if (ic->selected) ov_icon(ic->dobj, ox + bl + ic->x - w->sx + dx, oy + bt + ic->y - w->sy + dy);
     gfx_touch();
 }
 
@@ -1234,7 +1502,7 @@ static void drop(void) {
         for (AppObj *a = wb.apps; a; a = a->next) if (a->handle == on->appicon) send_appmsg(a, AMTYPE_APPICON, sel, n, 0, 0);
         return;
     }
-    if (on && (on->type == WBDRAWER || on->type == WBDISK)) { move_into(sel, n, on->path); return; }
+    if (on && (on->type == WBDRAWER || on->type == WBDISK || on->type == WBGARBAGE)) { move_into(sel, n, on->path); return; }
     if (on && on->type == WBTOOL && src != dst) { launch(on->path, sel[0]->path); return; }
     if (on && on->type == WBTOOL && src == dst) { launch(on->path, sel[0]->path); return; }
     if (dst == src) {
@@ -1300,7 +1568,7 @@ static void mouse_button(WBWin *w, NMsg *m) {
             int mox, moy, bl, bt, iw, ih;
             win_origin(mw, &mox, &moy);
             inner(mw, &bl, &bt, &iw, &ih);
-            int x0 = (wb.mx0 < wb.mx1 ? wb.mx0 : wb.mx1) - mox - bl, x1 = (wb.mx0 < wb.mx1 ? wb.mx1 : wb.mx0) - mox - bl;
+            int x0 = (wb.mx0 < wb.mx1 ? wb.mx0 : wb.mx1) - mox - bl + mw->sx, x1 = (wb.mx0 < wb.mx1 ? wb.mx1 : wb.mx0) - mox - bl + mw->sx;
             int y0 = (wb.my0 < wb.my1 ? wb.my0 : wb.my1) - moy - bt + mw->sy, y1 = (wb.my0 < wb.my1 ? wb.my1 : wb.my0) - moy - bt + mw->sy;
             for (WIcon *ic = mw->icons; ic; ic = ic->next) {
                 int a0, b0, a1, b1;
@@ -1395,9 +1663,95 @@ static void handle_requests(void) {
     }
 }
 
+/* ---- the information bars ------------------------------------------------------------- */
+
+/* 1234567 -> "1.234.567" */
+static void thousands(char *out, int max, unsigned long long v) {
+    char t[32];
+    int n = snprintf(t, sizeof t, "%llu", v), k = 0;
+    for (int i = 0; i < n && k < max - 2; i++) {
+        if (i && (n - i) % 3 == 0) out[k++] = '.';
+        out[k++] = t[i];
+    }
+    out[k] = 0;
+}
+
+/* 983.2 Mo, 1.4 Go: in Latin-1 for the Amiga side, with a decimal comma */
+static void size_text(char *out, int max, double bytes) {
+    const char *unit = "Ko";
+    double v = bytes / 1024;
+    if (v >= 1024) { v /= 1024; unit = "Mo"; }
+    if (v >= 1024) { v /= 1024; unit = "Go"; }
+    if (v >= 1024) { v /= 1024; unit = "To"; }
+    snprintf(out, (size_t)max, "%.1f %s", v, unit);
+    char *dot = strchr(out, '.');
+    if (dot) *dot = ',';
+}
+
+static void update_screen_bar(void) {
+    if (!wb.s) return;
+    if (!wb.bartitle) wb.bartitle = exec_allocmem(256, MEMF_PUBLIC | MEMF_CLEAR);
+    static const char *days[] = { "dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi" };
+    static const char *months[] = { "jan", "f\xe9v", "mar", "avr", "mai", "jun", "jul", "ao\xfb", "sep", "oct", "nov", "d\xe9" "c" };
+    time_t now = time(0);
+    struct tm t;
+    localtime_r(&now, &t);
+    int tasks = 0;
+    for (NTask *n = sched_tasks(); n; n = n->next) if (!n->dead) tasks++;
+    char mem[32], line[256];
+    thousands(mem, sizeof mem, heap_avail(0));
+    snprintf(line, sizeof line, "AmigaMac Workbench 1.0   %s octets libres   CPU 68020/68882   %d t\xe2" "ches   %s %02d-%s-%02d   %02d:%02d:%02d",
+             mem, tasks, days[t.tm_wday], t.tm_mday, months[t.tm_mon], t.tm_year % 100, t.tm_hour, t.tm_min, t.tm_sec);
+    for (int i = 0; i <= (int)strlen(line) && i < 255; i++) wr8(wb.bartitle + (uint32_t)i, (uint8_t)line[i]);
+    wr32(wb.s->scr + Screen_Title, wb.bartitle);
+    wr32(wb.s->scr + Screen_DefaultTitle, wb.bartitle);
+    draw_screen_bar(wb.s);
+}
+
+/* a volume's window: "System   9 % plein, 983,2 Mo libres, 101,2 Mo utilisés" */
+static void update_volume_title(WBWin *w) {
+    size_t l = strlen(w->path);
+    if (w->backdrop || !l || w->path[l - 1] != ':') return;
+    char hp[2048], title[256], fr[32], us[32];
+    if (!host_of(w->path, hp, sizeof hp)) return;
+    if (!strcasecmp(w->path, "RAM:")) {                         /* the RAM disk: what it holds */
+        double used = 0;
+        DIR *d = opendir(hp);
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            char f[2600];
+            struct stat st;
+            snprintf(f, sizeof f, "%s/%s", hp, e->d_name);
+            if (e->d_name[0] != '.' && !stat(f, &st)) used += (double)st.st_size;
+        }
+        if (d) closedir(d);
+        size_text(us, sizeof us, used);
+        snprintf(title, sizeof title, "%s   100 %% plein, %s utilis\xe9s", volume_label(w->path), us);
+    } else {
+        struct statfs sf;
+        if (statfs(hp, &sf)) return;
+        double total = (double)sf.f_blocks * sf.f_bsize, avail = (double)sf.f_bavail * sf.f_bsize, used = total - (double)sf.f_bfree * sf.f_bsize;
+        size_text(fr, sizeof fr, avail);
+        size_text(us, sizeof us, used);
+        snprintf(title, sizeof title, "%s   %d %% plein, %s libres, %s utilis\xe9s", volume_label(w->path),
+                 total > 0 ? (int)(used * 100 / total + 0.5) : 0, fr, us);
+    }
+    if (!w->tbuf) w->tbuf = ar_alloc(&w->A, 256);
+    for (int i = 0; i <= (int)strlen(title) && i < 255; i++) wr8(w->tbuf + (uint32_t)i, (uint8_t)title[i]);
+    lib_call(wb.c, IntuitionBase, "intuition", "SetWindowTitles", w->win, w->tbuf, 0xFFFFFFFFu);
+}
+
+static void clock_tick(void) {
+    update_screen_bar();
+    if (wb.ticks++ % 5 == 0)
+        for (WBWin *w = wb.wins; w; w = w->next) update_volume_title(w);
+    sched_timer_add(now_us() + 1000000, TIMER_SIGNAL, wb.task, SIGF_CLOCK);
+}
+
 static void wb_loop(void) {
     while (wb.running) {
-        uint32_t got = exec_wait((1u << rd8(wb.port + MP_SIGBIT)) | SIGF_REQ);
+        uint32_t got = exec_wait((1u << rd8(wb.port + MP_SIGBIT)) | SIGF_REQ | SIGF_CLOCK);
+        if (got & SIGF_CLOCK) clock_tick();
         if (got & SIGF_REQ) handle_requests();
         uint32_t msg;
         while (wb.running && (msg = list_remhead(wb.port + MP_MSGLIST))) {
@@ -1422,18 +1776,22 @@ static void wb_loop(void) {
             case IDCMP_ACTIVEWINDOW: wb.active = w; sync_checks(w); break;
             case IDCMP_MOUSEBUTTONS: wb.active = w; mouse_button(w, &m); break;
             case IDCMP_MOUSEMOVE:
-                if (m.iaddr && m.iaddr == w->prop) goto scroll;
+                if (m.iaddr && (m.iaddr == w->prop || m.iaddr == w->hprop)) { from_props(w); break; }
                 mouse_move(w, &m);
                 break;
-            case IDCMP_GADGETDOWN: case IDCMP_GADGETUP:
-            scroll:
-                if (w->prop) {
-                    int bl, bt, iw, ih;
-                    inner(w, &bl, &bt, &iw, &ih);
-                    int range = w->ch - ih;
-                    int sy = range > 0 ? (int)((long)rd16(w->propinfo + PropInfo_VertPot) * range / 0xFFFF) : 0;
-                    if (sy != w->sy) { w->sy = sy; redraw(w); }
-                }
+            case IDCMP_GADGETDOWN: {
+                int id = m.iaddr ? (int)rd16(m.iaddr + Gadget_GadgetID) : 0;
+                if (id >= 2 && id <= 5) { scroll_step(w, id); w->held = id; }   /* arrows repeat while held */
+                else if (w->prop) from_props(w);
+                break;
+            }
+            case IDCMP_GADGETUP:
+                w->held = 0;
+                if (w->prop) from_props(w);
+                break;
+            case IDCMP_INTUITICKS:
+                if (w->held && w->arrows[w->held - 2] && (rd16(w->arrows[w->held - 2] + Gadget_Flags) & GFLG_SELECTED)) scroll_step(w, w->held);
+                else w->held = 0;
                 break;
             case IDCMP_NEWSIZE: relayout(w); break;
             case IDCMP_CLOSEWINDOW: if (!w->backdrop) detach_close(w); break;
@@ -1451,6 +1809,31 @@ static void quit_workbench(void) {
     wb.running = 0;
 }
 
+/* SYS:WBStartup: its programs (those with a tool icon) start with the Workbench */
+static void run_wbstartup(void) {
+    char hp[2048];
+    if (!host_of("SYS:WBStartup", hp, sizeof hp)) return;
+    DIR *d = opendir(hp);
+    struct dirent *e;
+    char names[64][256];
+    int n = 0;
+    while (d && (e = readdir(d)) && n < 64) {
+        size_t l = strlen(e->d_name);
+        if (e->d_name[0] == '.' || l < 6 || strcasecmp(e->d_name + l - 5, ".info")) continue;
+        snprintf(names[n++], sizeof names[0], "%.*s", (int)(l - 5), e->d_name);
+    }
+    if (d) closedir(d);
+    qsort(names, (size_t)n, sizeof names[0], (int (*)(const void *, const void *))strcasecmp);
+    for (int i = 0; i < n; i++) {
+        char ap[600];
+        join_path(ap, sizeof ap, "SYS:WBStartup", names[i]);
+        uint32_t dobj = icon_get(ap);
+        int type = dobj ? rd8(dobj + DiskObject_do_Type) : 0;
+        if (dobj) icon_free(dobj);
+        if (type == WBTOOL) launch(ap, 0);
+    }
+}
+
 static void wb_main(void *arg) {
     (void)arg;
     NTask *me = sched_current();
@@ -1463,6 +1846,8 @@ static void wb_main(void *arg) {
     build_menus();
     open_desktop();
     open_drawer("SYS:", 0);
+    clock_tick();
+    run_wbstartup();
     wb_loop();
     /* still running programs reply later: wait for them before the port goes */
     while (wb.launches || wb.nappmsgs) {

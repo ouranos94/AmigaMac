@@ -53,4 +53,7 @@ uint32_t ar_text(Arena *a, const char *utf8);
 #define WA_RMBTrap_ WA_(39)
 #define WA_SimpleRefresh_ WA_(41)
 #define WA_NewLookMenus_ WA_(48)
+#define WA_Zoom_ WA_(0x1A)
+#define WA_SizeBRight_ WA_(0x2B)
+#define WA_SizeBBottom_ WA_(0x2C)
 #endif

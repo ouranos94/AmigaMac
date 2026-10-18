@@ -189,6 +189,31 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   `SetPointer`/`ClearPointer`, pointeur d'attente (`WA_BusyPointer`, `SetWindowPointerA`),
   et le sprite 0 (`GetSprite`/`ChangeSprite`/`FreeSprite`) que prennent les économiseurs
   pour le cacher. input.device produit lui-même ses événements temporels (10 par seconde).
+- **Apparence inspirée d'AmigaOS 3.2** : palette claire (fenêtres gris-bleu, cadre et
+  barre de titre bleus pour la fenêtre active, bureau gris clair, barre d'écran bleu
+  pâle), gadgets dessinés à la manière de 3.x (fermeture, zoom, profondeur, taille),
+  gadget de zoom (`WA_Zoom`, `ZipWindow`), tiroirs avec ascenseurs vertical et
+  horizontal et leurs flèches groupées en bas à droite (répétition tant qu'on appuie),
+  volumes en colonne à gauche, 1280x720 par défaut.
+- **Icônes en couleurs** : icon.library lit le format couleur d'AmigaOS 3.5+ (bloc IFF
+  `FORM ICON`, morceaux `FACE` et `IMAG`, images et palettes compressées RLE), le garde
+  à l'écriture, et le Workbench (256 couleurs par défaut) les affiche en attribuant à
+  chaque couleur un stylo de l'écran (exact s'il en reste, sinon le plus proche). Les
+  icônes par défaut viennent de `ENV:Sys/def_*.info` (copiés d'ENVARC: au démarrage),
+  comme sur AmigaOS. Un jeu d'icônes AmigaMac original est dessiné par
+  `tools/mkicons.py` : tiroir, disque, Ram Disk, Mac, corbeille, outil, document, Shell,
+  ScreenMode ; chaque fichier garde aussi une image classique 4 couleurs.
+- **Fond et organisation** : le Workbench lit `ENV:Sys/wbpattern.prefs` (format
+  WBPattern, image en mosaïque, centrée ou à l'échelle) et affiche l'image nommée
+  derrière le bureau ; le fond AmigaMac (dégradé et nom, dessin original) est produit
+  par `tools/mkbackdrop.py`. Le disque System a les tiroirs d'AmigaOS 3.2 (System,
+  Storage, WBStartup, Expansion…) avec des icônes à emblème, et une **Corbeille** : on y
+  dépose des icônes, *Icônes → Vider la corbeille* la vide après confirmation. Les
+  programmes placés dans `SYS:WBStartup` démarrent avec le Workbench.
+- **Barres d'information** : la barre d'écran du Workbench donne chaque seconde la
+  mémoire libre, le processeur, le nombre de tâches, la date et l'heure ; la fenêtre
+  d'un volume affiche son remplissage (« System 28 % plein, 670,2 Go libres… », chiffres
+  réels du disque du Mac ; pour Ram Disk, ce qu'il contient).
 - **Icône Shell** dans le tiroir `SYS:System`, à sa place sur AmigaOS : un double-clic
   ouvre une fenêtre Shell (programme 68k `Programs/shell.c`, icône dessinée dans
   `fonts/shell_icon.txt` et produite par `tools/mkinfo.py`).

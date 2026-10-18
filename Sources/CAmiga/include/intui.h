@@ -28,6 +28,7 @@
 #define WFLG_NOCAREREFRESH 0x20000
 #define WFLG_NW_EXTENDED 0x40000
 #define WFLG_WBENCHWINDOW 0x2000000
+#define WFLG_HASZOOM 0x20000000
 
 /* IDCMP classes */
 #define IDCMP_SIZEVERIFY 0x1
@@ -91,6 +92,7 @@ struct NScreen {
     int id;                         /* host window id */
     int w, h, depth, hires, lace;   /* hires: 0 low, 1 high, 2 super-high, 3 square pixels */
     uint32_t modeid;                /* display database ID */
+    uint8_t pen_used[256];          /* pens handed out by screen_obtain_pen */
     uint32_t pal[256];              /* 0x00RRGGBB */
     uint16_t pens[NUMDRIPENS];
     uint32_t drawinfo;
@@ -114,6 +116,7 @@ struct NWindow {
     void (*hook)(NWindow *w, int kind, int a, int b, int c);
     /* its pointer: 0 the system one, 1 SetPointer's image, 2 busy */
     int ptr_kind, ptr_w, ptr_h, ptr_hx, ptr_hy;
+    int zx, zy, zw, zh;             /* WA_Zoom: the other box the zoom gadget switches to */
     uint8_t *ptr_pix;               /* pens 0-3, ptr_w x ptr_h */
     NWindow *next;                  /* towards the back */
 };
@@ -133,6 +136,11 @@ void draw_frame(NWindow *w);
 void draw_screen_bar(NScreen *s);
 void win_activate(NWindow *w);
 void pointer_update(void);
+void win_zip(NWindow *w);
+int zoom_width(NWindow *w);
+int frame_pen_inactive(NScreen *s);   /* the frame of inactive windows */
+int desktop_pen(NScreen *s);          /* the Workbench backdrop */
+int screen_obtain_pen(NScreen *s, uint32_t rgb);   /* a pen showing that colour (exact if free) */
 void pointer_sprite0(const uint8_t *pix, int h, int on);   /* graphics: sprite 0 is the pointer */
 void win_to_front(NWindow *w);
 void win_to_back(NWindow *w);

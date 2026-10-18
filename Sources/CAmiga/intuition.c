@@ -24,9 +24,35 @@ static int next_screen_id = 1;
 #define IB_ACTIVESCREEN IntuitionBase_ActiveScreen
 #define IB_FIRSTSCREEN IntuitionBase_FirstScreen
 
-static const uint16_t wb_pens[NUMDRIPENS] = { 0, 1, 1, 2, 1, 3, 1, 0, 2, 1, 2, 1 };
-static const uint32_t wb_palette[8] = { 0xAAAAAA, 0x000000, 0xFFFFFF, 0x6688BB,
-                                        0x999999, 0xBBBBBB, 0xBB9977, 0xFFBBAA };
+/* DrawInfo pens: DETAIL, BLOCK, TEXT, SHINE, SHADOW, FILL, FILLTEXT, BACKGROUND,
+   HIGHLIGHTTEXT, BARDETAIL, BARBLOCK, BARTRIM */
+static const uint16_t wb_pens[NUMDRIPENS] = { 0, 1, 1, 2, 1, 3, 1, 0, 2, 1, 7, 1 };
+/* the Workbench colours: blue-grey windows, blue active frames, a light grey desktop */
+static const uint32_t wb_palette[8] = { 0xA8B8D0, 0x000000, 0xF4F8FF, 0x6A88E8,
+                                        0x7A8CA8, 0x98A8C4, 0xDCDCDC, 0xE8EEFF };
+
+int frame_pen_inactive(NScreen *s) { return s->depth >= 3 ? 5 : s->pens[BACKGROUNDPEN]; }
+int desktop_pen(NScreen *s) { return s->depth >= 3 ? 6 : s->pens[BACKGROUNDPEN]; }
+
+static void set_pal(NScreen *s, int n, uint32_t rgb);
+/* a pen for a colour: one already showing it, else a free one set to it, else the nearest */
+int screen_obtain_pen(NScreen *s, uint32_t rgb) {
+    int n = s->depth >= 8 ? 256 : 1 << s->depth;
+    for (int i = 0; i < n; i++) if ((i < 8 || s->pen_used[i]) && s->pal[i] == rgb) return i;
+    for (int i = 8; i < n; i++) {
+        if (i >= 16 && i <= 19) continue;                           /* the pointer's colours */
+        if (!s->pen_used[i]) { s->pen_used[i] = 1; set_pal(s, i, rgb); return i; }
+    }
+    int best = 0;
+    long bd = 1L << 30;
+    for (int i = 0; i < n; i++) {
+        if (i >= 8 && !s->pen_used[i]) continue;
+        long dr = (long)(s->pal[i] >> 16 & 0xFF) - (rgb >> 16 & 0xFF), dg = (long)(s->pal[i] >> 8 & 0xFF) - (rgb >> 8 & 0xFF), db = (long)(s->pal[i] & 0xFF) - (rgb & 0xFF);
+        long d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
 
 NWindow *nwin_of(uint32_t win) {
     for (NScreen *s = screens; s; s = s->next)
@@ -190,6 +216,7 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     wr32(rp + RastPort_BitMap, bm);
     /* pens and palette */
     for (int i = 0; i < NUMDRIPENS; i++) s->pens[i] = wb_pens[i];
+    if (depth < 3) s->pens[BARBLOCKPEN] = 2;                       /* only four colours */
     if (pens) for (int i = 0; i < NUMDRIPENS && rd16(pens + 2 * (uint32_t)i) != 0xFFFF; i++) s->pens[i] = (uint16_t)rd16(pens + 2 * (uint32_t)i);
     for (int i = 0; i < 256; i++) set_pal(s, i, i < 8 ? wb_palette[i] : (uint32_t)((i * 37) & 0xFF) << 16 | (uint32_t)((i * 91) & 0xFF) << 8 | (uint32_t)((i * 53) & 0xFF));
     set_pal(s, 17, 0xEE4444); set_pal(s, 18, 0x000000); set_pal(s, 19, 0xEEEECC);   /* the pointer's colours */
@@ -252,14 +279,14 @@ static int read_screenmode_prefs(const char *apath, uint32_t *id, int *w, int *h
 NScreen *workbench_screen(int open_it) {
     for (NScreen *s = screens; s; s = s->next) if (s->workbench) return s;
     if (!open_it) return 0;
-    uint32_t id = 0x00029000;
-    int w = 0, h = 0, depth = 3, mw, mh, res, lace;
+    uint32_t id = 0x50031000;                                   /* AmigaMac: 1280x720 unless the prefs say otherwise */
+    int w = 0, h = 0, depth = 8, mw, mh, res, lace;            /* 256 colours: colour icons */
     if (!read_screenmode_prefs("ENV:Sys/screenmode.prefs", &id, &w, &h, &depth))
         read_screenmode_prefs("ENVARC:Sys/screenmode.prefs", &id, &w, &h, &depth);
     if (!gfx_mode_info(id, &mw, &mh, &res, &lace)) { id = 0x00029000; mw = 640; mh = 256; }
     if (w < 320 || w > 4096) w = mw;                           /* 0 or STDSCREENWIDTH: the mode's size */
     if (h < 200 || h > 4096) h = mh;
-    if (depth < 1 || depth > 8) depth = 3;
+    if (depth < 1 || depth > 8) depth = 8;
     return open_screen(w, h, depth, id, "AmigaMac Workbench", 1 /* WBENCHSCREEN */, 1, 0, 1);
 }
 
@@ -377,6 +404,13 @@ static void sys_gadgets(NWindow *w, int *close_w, int *depth_w) {
     *close_w = (fl & WFLG_CLOSEGADGET) ? 20 : 0;
     *depth_w = (fl & WFLG_DEPTHGADGET) ? 24 : 0;
 }
+int zoom_width(NWindow *w) { return (rd32(w->win + Window_Flags) & WFLG_HASZOOM) ? 23 : 0; }
+
+/* an outlined box, filled */
+static void box(BM *b, int x0, int y0, int x1, int y1, int line, int inside) {
+    bm_fill(b, x0, y0, x1, y1, line, JAM1, 0xFF);
+    if (x1 - x0 > 1 && y1 - y0 > 1) bm_fill(b, x0 + 1, y0 + 1, x1 - 1, y1 - 1, inside, JAM1, 0xFF);
+}
 
 void draw_frame(NWindow *w) {
     uint32_t win = w->win, fl = rd32(win + Window_Flags);
@@ -389,42 +423,54 @@ void draw_frame(NWindow *w) {
     int br = (int8_t)rd8(win + Window_BorderRight), bb = (int8_t)rd8(win + Window_BorderBottom);
     int active = (fl & WFLG_WINDOWACTIVE) != 0;
     int shine = s->pens[SHINEPEN], shadow = s->pens[SHADOWPEN];
-    int fill = active ? s->pens[FILLPEN] : s->pens[BACKGROUNDPEN];
-    /* border areas */
+    int fill = active ? s->pens[FILLPEN] : frame_pen_inactive(s);
+    /* the frame: title bar and borders in the window's colour */
     bm_fill(&b, 0, 0, W - 1, bt - 1, fill, JAM1, 0xFF);
     bm_fill(&b, 0, 0, bl - 1, H - 1, fill, JAM1, 0xFF);
     bm_fill(&b, W - br, 0, W - 1, H - 1, fill, JAM1, 0xFF);
     bm_fill(&b, 0, H - bb, W - 1, H - 1, fill, JAM1, 0xFF);
     bevel(&b, 0, 0, W - 1, H - 1, shine, shadow, 0);
     if (bl > 1 || bt > 1) bevel(&b, bl - 1, bt - 1, W - br, H - bb, shine, shadow, 1);
-    /* title bar contents */
-    int cw, dw;
+    int cw, dw, zw = zoom_width(w);
     sys_gadgets(w, &cw, &dw);
     if (bt > 2) {
-        if (cw) {                                               /* close gadget */
-            bevel(&b, 0, 0, cw - 1, bt - 2, shine, shadow, 0);
-            int cx = cw / 2 - 3, cy = bt / 2 - 3;
-            bm_fill(&b, cx, cy, cx + 5, cy + 4, shadow, JAM1, 0xFF);
-            bm_fill(&b, cx + 2, cy + 1, cx + 3, cy + 3, shine, JAM1, 0xFF);
+        int gh = bt - 2, cy = gh / 2;
+        if (cw) {                                               /* close: a small box with a dot */
+            bevel(&b, 0, 0, cw - 1, gh, shine, shadow, 0);
+            vline(&b, cw - 1, 0, gh, shadow);
+            int cx = cw / 2;
+            box(&b, cx - 3, cy - 2, cx + 3, cy + 3, shadow, shine);
+            bm_fill(&b, cx - 1, cy, cx + 1, cy + 1, shadow, JAM1, 0xFF);
         }
-        if (dw) {                                               /* depth gadget */
+        if (dw) {                                               /* depth: two overlapping windows */
             int gx = W - dw;
-            bevel(&b, gx, 0, W - 1, bt - 2, shine, shadow, 0);
-            bm_fill(&b, gx + 5, 2, gx + 13, bt - 6, shadow, JAM1, 0xFF);
-            bm_fill(&b, gx + 9, 4, gx + 17, bt - 4, shine, JAM1, 0xFF);
-            bm_fill(&b, gx + 10, 5, gx + 16, bt - 5, fill, JAM1, 0xFF);
+            bevel(&b, gx, 0, W - 1, gh, shine, shadow, 0);
+            vline(&b, gx, 0, gh, shine);
+            int x0 = gx + 5, y0 = cy - 4;
+            box(&b, x0, y0, x0 + 9, y0 + 6, shadow, fill);
+            box(&b, x0 + 5, y0 + 3, x0 + 14, y0 + 9, shadow, shine);
+        }
+        if (zw) {                                               /* zoom: a small window in a bigger one */
+            int gx = W - dw - zw;
+            bevel(&b, gx, 0, gx + zw - 1, gh, shine, shadow, 0);
+            int x0 = gx + 5, y0 = cy - 4;
+            box(&b, x0, y0, x0 + 13, y0 + 9, shadow, shine);
+            box(&b, x0 + 1, y0 + 1, x0 + 6, y0 + 4, shadow, fill);
         }
         char title[128];
         str_get(rd32(win + Window_Title), title, sizeof title);
-        int maxc = (W - cw - dw - 8) / 8;
+        int maxc = (W - cw - dw - zw - 8) / 8;
         if (maxc < 0) maxc = 0;
         if ((int)strlen(title) > maxc) title[maxc] = 0;
-        bm_text(&b, cw + 4, (bt - 8) / 2, title, active ? s->pens[FILLTEXTPEN] : s->pens[TEXTPEN]);
+        bm_text(&b, cw + 6, (bt - 8) / 2, title, active ? s->pens[FILLTEXTPEN] : s->pens[TEXTPEN]);
     }
-    if (fl & WFLG_SIZEGADGET) {                                 /* size gadget, bottom right */
+    if (fl & WFLG_SIZEGADGET) {                                 /* size: a corner, bottom right */
         int gx = W - (br > 4 ? br : 18), gy = H - (bb > 2 ? bb : 10);
+        bm_fill(&b, gx, gy, W - 1, H - 1, fill, JAM1, 0xFF);
         bevel(&b, gx, gy, W - 1, H - 1, shine, shadow, 0);
-        for (int i = 0; i < 5; i++) hline(&b, W - 6 - i, W - 5, H - 4 - i, shadow);
+        int x1 = W - 4, y1 = H - 3, n = (H - gy) - 5;
+        for (int i = 0; i < n; i++) hline(&b, x1 - i * 2, x1, y1 - i, shadow);
+        for (int i = 0; i < n; i++) bm_pixel(&b, x1 - i * 2 - 1, y1 - i, shine, JAM1, 0xFF);
     }
     gfx_touch();
 }
@@ -559,6 +605,8 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
     flags = flag_tag(tags, WA_SizeBRight, flags, WFLG_SIZEBRIGHT);
     flags = flag_tag(tags, WA_SizeBBottom, flags, WFLG_SIZEBBOTTOM);
     flags = flag_tag(tags, WA_GimmeZeroZero, flags, WFLG_GIMMEZEROZERO);
+    uint32_t zoom = tag_value(tags, 0x8000007D /* WA_Zoom */, 0);
+    if (zoom) flags |= WFLG_HASZOOM;
     if (tag_value(tags, WA_SimpleRefresh, 0)) flags |= WFLG_SIMPLE_REFRESH;
 
     /* which screen */
@@ -685,6 +733,12 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
     wr32(s->scr + Screen_FirstWindow, win);
     pthread_mutex_unlock(&disp_lock);
 
+    if (zoom) {                                                     /* the other box: Left, Top, Width, Height */
+        nwn->zx = (int16_t)rd16(zoom); nwn->zy = (int16_t)rd16(zoom + 2);
+        nwn->zw = (int16_t)rd16(zoom + 4); nwn->zh = (int16_t)rd16(zoom + 6);
+        if (nwn->zx < 0) nwn->zx = x;                               /* ~0: keep the position */
+        if (nwn->zy < 0) nwn->zy = y;
+    }
     if (tags && tag_value(tags, 0x80000098 /* WA_BusyPointer */, 0)) nwn->ptr_kind = 2;
     draw_frame(nwn);
     gadget_render_all(nwn, gadgets, -1);
@@ -1132,6 +1186,17 @@ static uint32_t i_SetWindowPointerA(M68K *c) {
     return 0;
 }
 
+/* the zoom gadget and ZipWindow(): switch to the other box */
+void win_zip(NWindow *w) {
+    if (!w->zw || !w->zh) return;
+    int x = w->x, y = w->y, ww = w->w, hh = w->h;
+    win_move(w, w->zx, w->zy);
+    win_resize(w, w->zw, w->zh);
+    w->zx = x; w->zy = y; w->zw = ww; w->zh = hh;
+    send_idcmp(w, 0x02000000 /* IDCMP_CHANGEWINDOW */, 0, 0, 0, 0, 0);
+}
+static uint32_t i_ZipWindow(M68K *c) { NWindow *w = nwin_of(c->a[0]); if (w) win_zip(w); return 0; }
+
 static uint32_t i_nop(M68K *c) { (void)c; return 0; }
 static uint32_t i_LockIBase(M68K *c) { (void)c; return 0; }
 
@@ -1209,12 +1274,12 @@ static const NativeEntry intui_natives[] = {
     { "FreeScreenDrawInfo", i_FreeScreenDrawInfo },
     { "MakeScreen", i_nop }, { "RethinkDisplay", i_nop }, { "RemakeDisplay", i_nop },
     { "LockIBase", i_LockIBase }, { "UnlockIBase", i_nop },
-    { "SetPointer", i_SetPointer }, { "ClearPointer", i_ClearPointer }, { "SetWindowPointerA", i_SetWindowPointerA },
+    { "ZipWindow", i_ZipWindow }, { "SetPointer", i_SetPointer }, { "ClearPointer", i_ClearPointer }, { "SetWindowPointerA", i_SetWindowPointerA },
     { "DisplayBeep", i_DisplayBeep }, { "CurrentTime", i_CurrentTime }, { "DoubleClick", i_DoubleClick },
     { "AllocRemember", i_AllocRemember }, { "FreeRemember", i_FreeRemember },
     { "GetPrefs", i_GetPrefs }, { "GetDefPrefs", i_GetPrefs }, { "SetPrefs", i_nop },
     { "DisplayAlert", i_DisplayAlert }, { "TimedDisplayAlert", i_DisplayAlert },
-    { "ZipWindow", i_nop }, { "HelpControl", i_nop }, { "SetPubScreenModes", i_nop },
+    { "HelpControl", i_nop }, { "SetPubScreenModes", i_nop },
     { 0, 0 }
 };
 

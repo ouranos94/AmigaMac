@@ -27,6 +27,7 @@ int icon_put(const char *name, uint32_t dobj);
 void icon_free(uint32_t dobj);
 int icon_type_of(const char *name);                        /* WBDISK/WBDRAWER/WBTOOL/WBPROJECT, 0 if missing */
 void icon_size(uint32_t dobj, int *w, int *h);             /* the image (hit box) */
+uint32_t icon_env_default(const char *name);   /* ENV:Sys/def_<name>.info */
 void icon_draw(uint32_t rp, uint32_t dobj, const char *label, int x, int y, int selected, const uint16_t *pens);
 uint32_t icon_find_tooltype(uint32_t array, const char *name);
 extern uint32_t IconBase;
