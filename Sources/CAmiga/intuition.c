@@ -26,13 +26,13 @@ static int next_screen_id = 1;
 
 /* DrawInfo pens: DETAIL, BLOCK, TEXT, SHINE, SHADOW, FILL, FILLTEXT, BACKGROUND,
    HIGHLIGHTTEXT, BARDETAIL, BARBLOCK, BARTRIM */
-static const uint16_t wb_pens[NUMDRIPENS] = { 0, 1, 1, 2, 1, 3, 1, 0, 2, 1, 7, 1 };
+static const uint16_t wb_pens[NUMDRIPENS] = { 0, 1, 1, 2, 1, 3, 1, 0, 2, 1, 2, 1 };   /* the standard ones: programs copy them */
 /* the Workbench colours: blue-grey windows, blue active frames, a light grey desktop */
 static const uint32_t wb_palette[8] = { 0xA8B8D0, 0x000000, 0xF4F8FF, 0x6A88E8,
                                         0x7A8CA8, 0x98A8C4, 0xDCDCDC, 0xE8EEFF };
 
-int frame_pen_inactive(NScreen *s) { return s->depth >= 3 ? 5 : s->pens[BACKGROUNDPEN]; }
-int desktop_pen(NScreen *s) { return s->depth >= 3 ? 6 : s->pens[BACKGROUNDPEN]; }
+int frame_pen_inactive(NScreen *s) { return s->workbench && s->depth >= 3 ? 5 : s->pens[BACKGROUNDPEN]; }
+int desktop_pen(NScreen *s) { return s->workbench && s->depth >= 3 ? 6 : s->pens[BACKGROUNDPEN]; }
 
 static void set_pal(NScreen *s, int n, uint32_t rgb);
 /* a pen for a colour: one already showing it, else a free one set to it, else the nearest */
@@ -178,7 +178,7 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     wr32(scr + Screen_DefaultTitle, t);
     uint32_t font = gfx_default_font();
     int fh = rd16(font + TextFont_tf_YSize);
-    wr8(scr + Screen_BarHeight, fh + 2);
+    wr8(scr + Screen_BarHeight, fh + 4);                      /* bars with room around the text */
     wr8(scr + Screen_BarVBorder, 1);
     wr8(scr + Screen_BarHBorder, 5);
     wr8(scr + Screen_MenuVBorder, 2);
@@ -216,7 +216,6 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     wr32(rp + RastPort_BitMap, bm);
     /* pens and palette */
     for (int i = 0; i < NUMDRIPENS; i++) s->pens[i] = wb_pens[i];
-    if (depth < 3) s->pens[BARBLOCKPEN] = 2;                       /* only four colours */
     if (pens) for (int i = 0; i < NUMDRIPENS && rd16(pens + 2 * (uint32_t)i) != 0xFFFF; i++) s->pens[i] = (uint16_t)rd16(pens + 2 * (uint32_t)i);
     for (int i = 0; i < 256; i++) set_pal(s, i, i < 8 ? wb_palette[i] : (uint32_t)((i * 37) & 0xFF) << 16 | (uint32_t)((i * 91) & 0xFF) << 8 | (uint32_t)((i * 53) & 0xFF));
     set_pal(s, 17, 0xEE4444); set_pal(s, 18, 0x000000); set_pal(s, 19, 0xEEEECC);   /* the pointer's colours */
@@ -434,28 +433,27 @@ void draw_frame(NWindow *w) {
     int cw, dw, zw = zoom_width(w);
     sys_gadgets(w, &cw, &dw);
     if (bt > 2) {
-        int gh = bt - 2, cy = gh / 2;
+        /* the gadgets' glyphs keep two pixels from the bar's edges */
+        int gh = bt - 2, cy = gh / 2, top = 2, bot = gh - 2, ih = bot - top;
         if (cw) {                                               /* close: a small box with a dot */
             bevel(&b, 0, 0, cw - 1, gh, shine, shadow, 0);
-            vline(&b, cw - 1, 0, gh, shadow);
-            int cx = cw / 2;
-            box(&b, cx - 3, cy - 2, cx + 3, cy + 3, shadow, shine);
-            bm_fill(&b, cx - 1, cy, cx + 1, cy + 1, shadow, JAM1, 0xFF);
+            int cx = cw / 2, r = ih / 2 > 3 ? 3 : ih / 2;
+            box(&b, cx - r, cy - r, cx + r, cy + r, shadow, shine);
+            bm_fill(&b, cx - 1, cy - 1, cx + 1, cy + 1, shadow, JAM1, 0xFF);
         }
         if (dw) {                                               /* depth: two overlapping windows */
             int gx = W - dw;
             bevel(&b, gx, 0, W - 1, gh, shine, shadow, 0);
-            vline(&b, gx, 0, gh, shine);
-            int x0 = gx + 5, y0 = cy - 4;
-            box(&b, x0, y0, x0 + 9, y0 + 6, shadow, fill);
-            box(&b, x0 + 5, y0 + 3, x0 + 14, y0 + 9, shadow, shine);
+            int x0 = gx + 5, bh = ih * 2 / 3;
+            box(&b, x0, top, x0 + 9, top + bh, shadow, fill);
+            box(&b, x0 + 5, bot - bh, x0 + 14, bot, shadow, shine);
         }
         if (zw) {                                               /* zoom: a small window in a bigger one */
             int gx = W - dw - zw;
             bevel(&b, gx, 0, gx + zw - 1, gh, shine, shadow, 0);
-            int x0 = gx + 5, y0 = cy - 4;
-            box(&b, x0, y0, x0 + 13, y0 + 9, shadow, shine);
-            box(&b, x0 + 1, y0 + 1, x0 + 6, y0 + 4, shadow, fill);
+            int x0 = gx + 5;
+            box(&b, x0, top, x0 + 13, bot, shadow, shine);
+            box(&b, x0, top, x0 + 6, top + ih / 2, shadow, fill);
         }
         char title[128];
         str_get(rd32(win + Window_Title), title, sizeof title);
