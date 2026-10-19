@@ -633,11 +633,12 @@ void icon_draw(uint32_t rp, uint32_t dobj, const char *label, int x, int y, int 
         }
     }
     if (label && *label) {
-        int n = (int)strlen(label), tw = n * 8;
+        uint32_t tf = rd32(rp + RastPort_Font);
+        int n = (int)strlen(label), tw = font_text_width(tf, label, n);
         uint32_t ofg = rd8(rp + RastPort_FgPen), om = rd8(rp + RastPort_DrawMode);
         wr8(rp + RastPort_FgPen, pens ? pens[TEXTPEN] : 1);
         wr8(rp + RastPort_DrawMode, JAM1);
-        rp_move(rp, x + (w - tw) / 2, y + h + 1 + 6);
+        rp_move(rp, x + (w - tw) / 2, y + h + 1 + rd16((tf ? tf : gfx_default_font()) + TextFont_tf_Baseline));
         rp_text(rp, label, n);
         wr8(rp + RastPort_FgPen, ofg);
         wr8(rp + RastPort_DrawMode, om);
@@ -924,9 +925,11 @@ static uint32_t ic_GetIconRectangleA(M68K *c) {
     int x0 = 0, x1 = w - 1, y1 = h - 1;
     if (c->a[2]) {
         char label[256];
-        int tw = str_get(c->a[2], label, sizeof label) * 8;
+        uint32_t tf = c->a[0] ? rd32(c->a[0] + RastPort_Font) : 0;
+        if (!tf) tf = gfx_default_font();
+        int n = str_get(c->a[2], label, sizeof label), tw = font_text_width(tf, label, n);
         if (tw > w) { x0 = (w - tw) / 2; x1 = x0 + tw - 1; }
-        y1 = h + 1 + 8;
+        y1 = h + 1 + rd16(tf + TextFont_tf_YSize);
     }
     wr16(c->a[3], (uint32_t)x0); wr16(c->a[3] + 2, 0); wr16(c->a[3] + 4, (uint32_t)x1); wr16(c->a[3] + 6, (uint32_t)y1);
     return DOSTRUE;

@@ -340,6 +340,14 @@ static int rp_get(uint32_t rp, RP *r) {
     return 1;
 }
 
+void rp_set_font(uint32_t rp, uint32_t f) {
+    if (!f) return;
+    wr32(rp + RastPort_Font, f);
+    wr16(rp + RastPort_TxHeight, rd16(f + TextFont_tf_YSize));
+    wr16(rp + RastPort_TxWidth, rd16(f + TextFont_tf_XSize));
+    wr16(rp + RastPort_TxBaseline, rd16(f + TextFont_tf_Baseline));
+}
+
 void rp_init(uint32_t rp) {
     for (int i = 0; i < RastPort_SIZEOF; i++) wr8(rp + i, 0);
     wr8(rp + RastPort_Mask, 0xFF);
@@ -406,7 +414,9 @@ static uint32_t make_font(const char *name, int ysize) {
     return tf;
 }
 
-uint32_t gfx_default_font(void) { return topaz8; }
+/* the system's default font (GfxBase->DefaultFont, set by the font preferences) */
+uint32_t gfx_default_font(void) { uint32_t f = GfxBase ? rd32(GfxBase + GfxBase_DefaultFont) : 0; return f ? f : topaz8; }
+uint32_t gfx_topaz8(void) { return topaz8; }
 
 uint32_t gfx_open_font(const char *name, int ysize) {
     /* a font in the system list (built-in topaz, or loaded by diskfont) */
@@ -430,6 +440,39 @@ static int char_advance(uint32_t rp, uint32_t tf, int c) {
     int adv = space ? (int16_t)rd16(space + 2 * (uint32_t)gi) : rd16(tf + TextFont_tf_XSize);
     if (kern) adv += (int16_t)rd16(kern + 2 * (uint32_t)gi);
     return adv + (int16_t)rd16(rp + RastPort_TxSpacing);
+}
+
+/* text width in a font, without a RastPort */
+int font_text_width(uint32_t tf, const char *s, int n) {
+    if (!tf) tf = topaz8;
+    uint32_t space = rd32(tf + TextFont_tf_CharSpace), kern = rd32(tf + TextFont_tf_CharKern);
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        int gi = glyph_index(tf, (uint8_t)s[i]);
+        w += space ? (int16_t)rd16(space + 2 * (uint32_t)gi) : rd16(tf + TextFont_tf_XSize);
+        if (kern) w += (int16_t)rd16(kern + 2 * (uint32_t)gi);
+    }
+    return w;
+}
+
+/* text drawn straight into a bitmap (Intuition's own bars and menus): y is the top of the line */
+void bm_font_text(BM *b, int x, int ytop, const char *s, int pen, uint32_t tf) {
+    if (!tf) tf = topaz8;
+    int ysize = rd16(tf + TextFont_tf_YSize), mod = rd16(tf + TextFont_tf_Modulo);
+    uint32_t data = rd32(tf + TextFont_tf_CharData), loc = rd32(tf + TextFont_tf_CharLoc);
+    uint32_t space = rd32(tf + TextFont_tf_CharSpace), kern = rd32(tf + TextFont_tf_CharKern);
+    for (; *s; s++) {
+        int gi = glyph_index(tf, (uint8_t)*s);
+        uint32_t l = rd32(loc + 4 * (uint32_t)gi);
+        int boff = (int)(l >> 16), bw = (int)(l & 0xFFFF);
+        int k = kern ? (int16_t)rd16(kern + 2 * (uint32_t)gi) : 0;
+        for (int row = 0; row < ysize; row++)
+            for (int col = 0; col < bw; col++) {
+                int bit = boff + col;
+                if ((rd8(data + (uint32_t)(row * mod + (bit >> 3))) >> (7 - (bit & 7))) & 1) bm_pixel(b, x + k + col, ytop + row, pen, JAM1, 0xFF);
+            }
+        x += (space ? (int16_t)rd16(space + 2 * (uint32_t)gi) : rd16(tf + TextFont_tf_XSize)) + k;
+    }
 }
 
 int rp_text_length(uint32_t rp, const char *s, int n) {

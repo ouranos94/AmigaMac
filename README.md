@@ -208,6 +208,19 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   comme sur AmigaOS. Un jeu d'icônes AmigaMac original est dessiné par
   `tools/mkicons.py` : tiroir, disque, Ram Disk, Mac, corbeille, outil, document, Shell,
   ScreenMode ; chaque fichier garde aussi une image classique 4 couleurs.
+- **Polices (Prefs/Font)** : SYS:Prefs/Font choisit, comme sur AmigaOS, la police des
+  icônes du Workbench, celle du texte système (chasse fixe : Shells, console,
+  `GfxBase->DefaultFont`) et celle de l'écran (barres de titre, menus, requêtes, fenêtres,
+  gadgets GadTools) ; « Utiliser » écrit `ENV:Sys/font.prefs`, « Sauver » aussi
+  `ENVARC:Sys/font.prefs`, et le Workbench se rouvre aussitôt avec elles. « Ajouter des
+  polices… » copie dans FONTS: une police bitmap Amiga (`nom.font` et le tiroir de ses
+  tailles) ou toutes celles d'un tiroir, d'une disquette par exemple (une archive LhA
+  s'extrait d'abord par le menu du Workbench). La requête de police d'asl.library liste
+  les vraies polices de FONTS: avec leurs tailles et un aperçu (chasse fixe seulement
+  si demandé). Intuition, GadTools, la console et le Workbench mesurent leurs textes dans
+  la police en usage, proportionnelle ou non. Deux familles d'origine sont fournies,
+  tirées de la police 8×8 d'AmigaMac par `tools/gendiskfont.py` : amigamac 8 et 16
+  (chasse fixe) et amigasans 8 et 16 (proportionnelle).
 - **Disquettes (.adf)** : une image de disquette Amiga (880 Ko, ou 1,76 Mo pour une
   haute densité) se met dans DF0: à DF3: par le menu Disquettes du Mac (⌘D insérer,
   ⌘E éjecter), en la glissant sur l'écran Amiga, en l'ouvrant depuis le Finder, ou par

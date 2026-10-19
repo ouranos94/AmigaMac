@@ -92,6 +92,7 @@ struct NScreen {
     int id;                         /* host window id */
     int w, h, depth, hires, lace;   /* hires: 0 low, 1 high, 2 super-high, 3 square pixels */
     uint32_t modeid;                /* display database ID */
+    uint32_t font;                  /* its TextFont: bars, menus, windows' text */
     uint8_t pen_used[256];          /* pens handed out by screen_obtain_pen */
     uint32_t pal[256];              /* 0x00RRGGBB */
     uint16_t pens[NUMDRIPENS];

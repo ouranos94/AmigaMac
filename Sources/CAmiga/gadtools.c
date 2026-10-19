@@ -183,12 +183,20 @@ static void ridge(uint32_t rp, const uint16_t *pens, int x, int y, int w, int h)
     bevel(rp, pens, x + 2, y + 1, w - 4, h - 2, 1);
 }
 
+/* the font being laid out or drawn: the RastPort's when drawing, the gadget's or the
+   screen's when creating, the screen's for menus */
+static uint32_t gfont;
+static int FH(void) { return rd16((gfont ? gfont : gfx_default_font()) + TextFont_tf_YSize); }
+static int TW(const char *s, int n) { return font_text_width(gfont ? gfont : gfx_default_font(), s, n); }
+static int FIT(const char *s, int n, int maxw) { while (n > 0 && TW(s, n) > maxw) n--; return n; }
+
 static void text_at(uint32_t rp, int x, int y, const char *s, int n, int fg, int bg, int jam2) {
     uint32_t ofg = rd8(rp + RastPort_FgPen), obg = rd8(rp + RastPort_BgPen), om = rd8(rp + RastPort_DrawMode);
     wr8(rp + RastPort_FgPen, (uint32_t)fg);
     wr8(rp + RastPort_BgPen, (uint32_t)bg);
     wr8(rp + RastPort_DrawMode, jam2 ? JAM2 : JAM1);
-    rp_move(rp, x, y + 6);
+    uint32_t tf = rd32(rp + RastPort_Font);
+    rp_move(rp, x, y + (tf ? rd16(tf + TextFont_tf_Baseline) : 6));
     rp_text(rp, s, n);
     wr8(rp + RastPort_FgPen, ofg);
     wr8(rp + RastPort_BgPen, obg);
@@ -208,21 +216,21 @@ static void strip_label(const char *in, char *out, int size, int *ul, int unders
 
 static void label_pos(GT *t, int x, int y, int w, int h, int tw, int *lx, int *ly) {
     switch (t->place) {
-    case PLACETEXT_RIGHT: *lx = x + w + 8; *ly = y + (h - 8) / 2; break;
-    case PLACETEXT_ABOVE: *lx = x + (w - tw) / 2; *ly = y - 10; break;
+    case PLACETEXT_RIGHT: *lx = x + w + 8; *ly = y + (h - FH()) / 2; break;
+    case PLACETEXT_ABOVE: *lx = x + (w - tw) / 2; *ly = y - FH() - 2; break;
     case PLACETEXT_BELOW: *lx = x + (w - tw) / 2; *ly = y + h + 2; break;
-    case PLACETEXT_IN: *lx = x + (w - tw) / 2; *ly = y + (h - 8) / 2; break;
-    default: *lx = x - tw - 8; *ly = y + (h - 8) / 2; break;
+    case PLACETEXT_IN: *lx = x + (w - tw) / 2; *ly = y + (h - FH()) / 2; break;
+    default: *lx = x - tw - 8; *ly = y + (h - FH()) / 2; break;
     }
 }
 
 static void draw_label(GT *t, uint32_t rp, const uint16_t *pens, int x, int y, int w, int h, int pen) {
     if (!t->label[0]) return;
-    int n = (int)strlen(t->label), tw = n * 8, lx, ly;
+    int n = (int)strlen(t->label), tw = TW(t->label, n), lx, ly;
     label_pos(t, x, y, w, h, tw, &lx, &ly);
     if (pen < 0) pen = pens[t->high ? HIGHLIGHTTEXTPEN : TEXTPEN];
     text_at(rp, lx, ly, t->label, n, pen, pens[BACKGROUNDPEN], t->place != PLACETEXT_IN);
-    if (t->ul >= 0) fill(rp, lx + t->ul * 8, ly + 8, lx + t->ul * 8 + 6, ly + 8, pen);
+    if (t->ul >= 0) fill(rp, lx + TW(t->label, t->ul), ly + FH(), lx + TW(t->label, t->ul + 1) - 2, ly + FH(), pen);
 }
 
 /* labels of CYCLE/MX: a NULL-terminated STRPTR array */
@@ -373,6 +381,7 @@ static int palette_pen(GT *t, int i) {
 
 static void gt_render(GT *t, NWindow *w, uint32_t rp) {
     const uint16_t *pens = w->s->pens;
+    gfont = rd32(rp + RastPort_Font);
     int x, y, gw, gh;
     gadget_box(w, t->g, &x, &y, &gw, &gh);
     int bg = pens[BACKGROUNDPEN];
@@ -383,10 +392,10 @@ static void gt_render(GT *t, NWindow *w, uint32_t rp) {
         bevel(rp, pens, x, y, gw, gh, t->pressed);
         if (t->place == PLACETEXT_IN) {
             int n = (int)strlen(t->label), lx, ly;
-            label_pos(t, x, y, gw, gh, n * 8, &lx, &ly);
+            label_pos(t, x, y, gw, gh, TW(t->label, n), &lx, &ly);
             int pen = t->pressed ? pens[FILLTEXTPEN] : pens[t->high ? HIGHLIGHTTEXTPEN : TEXTPEN];
             text_at(rp, lx, ly, t->label, n, pen, bg, 0);
-            if (t->ul >= 0) fill(rp, lx + t->ul * 8, ly + 8, lx + t->ul * 8 + 6, ly + 8, pen);
+            if (t->ul >= 0) fill(rp, lx + TW(t->label, t->ul), ly + FH(), lx + TW(t->label, t->ul + 1) - 2, ly + FH(), pen);
         } else draw_label(t, rp, pens, x, y, gw, gh, -1);
         break;
     case CHECKBOX_KIND:
@@ -411,8 +420,8 @@ static void gt_render(GT *t, NWindow *w, uint32_t rp) {
             bevel(rp, pens, x, by, t->bw, t->bh, i == t->value);
             if (i == t->value) fill(rp, x + 4, by + 2, x + t->bw - 5, by + t->bh - 3, pens[FILLPEN]);
             int l = label_str(t->labels, i, buf, sizeof buf);
-            int lx = t->place == PLACETEXT_LEFT ? x - l * 8 - 8 : x + t->bw + 8;
-            text_at(rp, lx, by + (t->bh - 8) / 2, buf, l, pens[TEXTPEN], bg, 1);
+            int lx = t->place == PLACETEXT_LEFT ? x - TW(buf, l) - 8 : x + t->bw + 8;
+            text_at(rp, lx, by + (t->bh - FH()) / 2, buf, l, pens[TEXTPEN], bg, 1);
         }
         (void)maxw;
         break;
@@ -430,9 +439,8 @@ static void gt_render(GT *t, NWindow *w, uint32_t rp) {
         fill(rp, x + 20, y + 2, x + 20, y + gh - 3, pens[SHADOWPEN]);
         fill(rp, x + 21, y + 2, x + 21, y + gh - 3, pens[SHINEPEN]);
         int l = label_str(t->labels, t->value, buf, sizeof buf);
-        int maxc = (gw - 28) / 8;
-        if (l > maxc) l = maxc;
-        text_at(rp, x + 22 + (gw - 22 - l * 8) / 2, y + (gh - 8) / 2, buf, l, pen, bg, 0);
+        l = FIT(buf, l, gw - 28);
+        text_at(rp, x + 22 + (gw - 22 - TW(buf, l)) / 2, y + (gh - FH()) / 2, buf, l, pen, bg, 0);
         draw_label(t, rp, pens, x, y, gw, gh, -1);
         break;
     }
@@ -442,14 +450,14 @@ static void gt_render(GT *t, NWindow *w, uint32_t rp) {
         if (t->kind == SLIDER_KIND && t->fmt[0]) {
             char lv[64];
             fmt_long(t->fmt, t->value, lv, sizeof lv);
-            int n = (int)strlen(lv), mw = t->maxlevellen * 8;
+            int n = (int)strlen(lv), mw = t->maxlevellen * TW("0", 1);
             if (n > t->maxlevellen) n = t->maxlevellen;
             int lx, ly;
             GT tmp = *t;
             tmp.place = t->levelplace;
             label_pos(&tmp, x, y, gw, gh, mw, &lx, &ly);
-            fill(rp, lx, ly, lx + mw - 1, ly + 7, bg);
-            text_at(rp, lx + mw - n * 8, ly, lv, n, pens[TEXTPEN], bg, 1);
+            fill(rp, lx, ly, lx + mw - 1, ly + FH() - 1, bg);
+            text_at(rp, lx + mw - TW(lv, n), ly, lv, n, pens[TEXTPEN], bg, 1);
         }
         break;
     case LISTVIEW_KIND: {
@@ -466,9 +474,8 @@ static void gt_render(GT *t, NWindow *w, uint32_t rp) {
             int ry = y + 2 + r * t->itemh, sel = t->showsel && t->top + r == t->value;
             if (sel) fill(rp, x + 4, ry, x + lw - 5, ry + t->itemh - 1, pens[FILLPEN]);
             int l = rd32(nd + LN_NAME) ? str_get(rd32(nd + LN_NAME), buf, sizeof buf) : 0;
-            int maxc = (lw - 12) / 8;
-            if (l > maxc) l = maxc;
-            text_at(rp, x + 6, ry + (t->itemh - 8) / 2, buf, l, pens[sel ? FILLTEXTPEN : TEXTPEN], bg, 0);
+            l = FIT(buf, l, lw - 12);
+            text_at(rp, x + 6, ry + (t->itemh - FH()) / 2, buf, l, pens[sel ? FILLTEXTPEN : TEXTPEN], bg, 0);
         }
         GT sc = *t;
         sc.kind = LISTVIEW_KIND;
@@ -507,9 +514,8 @@ static void gt_render(GT *t, NWindow *w, uint32_t rp) {
         if (t->kind == NUMBER_KIND) { fmt_long(t->fmt[0] ? t->fmt : "%ld", t->value, buf, sizeof buf); l = (int)strlen(buf); }
         else if (t->copytext) { snprintf(buf, sizeof buf, "%s", t->tbuf); l = (int)strlen(buf); }
         else l = t->text ? str_get(t->text, buf, sizeof buf) : 0;
-        int maxc = (gw - (t->border ? 12 : 0)) / 8;
-        if (l > maxc) l = maxc;
-        text_at(rp, x + (t->border ? 6 : 0), y + (gh - 8) / 2, buf, l, t->frontpen >= 0 ? t->frontpen : pens[TEXTPEN], bg, 0);
+        l = FIT(buf, l, gw - (t->border ? 12 : 0));
+        text_at(rp, x + (t->border ? 6 : 0), y + (gh - FH()) / 2, buf, l, t->frontpen >= 0 ? t->frontpen : pens[TEXTPEN], bg, 0);
         draw_label(t, rp, pens, x, y, gw, gh, -1);
         break;
     }
@@ -827,6 +833,8 @@ static uint32_t gt_CreateGadgetA(M68K *c) {
     int w = (int16_t)rd16(ng + NewGadget_ng_Width), h = (int16_t)rd16(ng + NewGadget_ng_Height);
     uint32_t flags = rd32(ng + NewGadget_ng_Flags), gtext = rd32(ng + NewGadget_ng_GadgetText);
 
+    gfont = font_from_attr(rd32(ng + NewGadget_ng_TextAttr));
+    if (!gfont) gfont = s->font;
     GT *t = calloc(1, sizeof *t);
     t->kind = kind;
     t->vi = vi;
@@ -834,7 +842,7 @@ static uint32_t gt_CreateGadgetA(M68K *c) {
     t->max = 15;
     t->visible = kind == SCROLLER_KIND ? 2 : 0;
     t->spacing = 1;
-    t->itemh = 8;
+    t->itemh = FH();
     t->value = kind == LISTVIEW_KIND ? -1 : kind == PALETTE_KIND ? 1 : 0;
     t->depth = 1; t->ncolors = 2;
     t->maxlevellen = 2;
@@ -857,7 +865,7 @@ static uint32_t gt_CreateGadgetA(M68K *c) {
         uint32_t si = blk + Gadget_SIZEOF, itx = si + StringInfo_SIZEOF, brd = itx + 2 * IntuiText_SIZEOF;
         uint32_t buf = brd + 4 * Border_SIZEOF + 48, undo = buf + (uint32_t)maxc + 2, lab = undo + (uint32_t)maxc + 2;
         for (int i = 0; t->label[i] && i < 95; i++) wr8(lab + (uint32_t)i, (uint8_t)t->label[i]);
-        int tw = (int)strlen(t->label) * 8, lx, ly;
+        int tw = TW(t->label, (int)strlen(t->label)), lx, ly;
         if (kind == GENERIC_KIND) {
             wr16(g + Gadget_LeftEdge, (uint32_t)x); wr16(g + Gadget_LeftEdge + 2, (uint32_t)y);
             wr16(g + Gadget_Width, (uint32_t)w); wr16(g + Gadget_Width + 2, (uint32_t)h);
@@ -1156,15 +1164,16 @@ static int item_text_width(uint32_t it) {
     if (!fill) return 0;
     if (fl & ITEMTEXT_) {
         char b[128];
-        return rd32(fill + IntuiText_IText) ? str_get(rd32(fill + IntuiText_IText), b, sizeof b) * 8 : 0;
+        int n = rd32(fill + IntuiText_IText) ? str_get(rd32(fill + IntuiText_IText), b, sizeof b) : 0;
+        return TW(b, n);
     }
     if (rd16(fill + Image_Width + 2) <= 2) return 0;          /* a bar */
     return (int16_t)rd16(fill + Image_Width);
 }
 static int item_height(uint32_t it) {
     uint32_t fl = rd16(it + MenuItem_Flags), fill = rd32(it + MenuItem_ItemFill);
-    if (fl & ITEMTEXT_) return 10;
-    if (!fill) return 10;
+    if (fl & ITEMTEXT_) return FH() + 2;
+    if (!fill) return FH() + 2;
     int h = (int16_t)rd16(fill + Image_Width + 2);
     return h <= 2 ? 6 : h + 2;
 }
@@ -1214,8 +1223,9 @@ static uint32_t gt_LayoutMenusA(M68K *c) {
     if (!s) return 0;
     int x = 4, bh = rd8(s->scr + Screen_BarHeight);
     char b[128];
+    gfont = s->font;
     for (uint32_t m = menu; m; m = rd32(m + Menu_NextMenu)) {
-        int tw = rd32(m + Menu_MenuName) ? str_get(rd32(m + Menu_MenuName), b, sizeof b) * 8 : 0;
+        int n = rd32(m + Menu_MenuName) ? str_get(rd32(m + Menu_MenuName), b, sizeof b) : 0, tw = TW(b, n);
         wr16(m + Menu_LeftEdge, (uint32_t)x);
         wr16(m + Menu_LeftEdge + 2, 0);
         wr16(m + Menu_Width, (uint32_t)(tw + 8));
@@ -1230,6 +1240,7 @@ static uint32_t gt_LayoutMenuItemsA(M68K *c) {
     NScreen *s = vi_screen(c->a[1]);
     uint32_t m = tag_get(c->a[2], GTMN_Menu, 0);
     int basex = m ? (int16_t)rd16(m + Menu_LeftEdge) : 0;
+    gfont = s ? s->font : 0;
     layout_items(c->a[0], 0, 0, s ? s->w : 640, basex);
     return DOSTRUE;
 }

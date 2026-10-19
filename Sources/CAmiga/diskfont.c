@@ -147,6 +147,47 @@ static uint32_t df_OpenDiskFont(M68K *c) {
     return tf;
 }
 
+/* a font for native callers (preferences): in memory, from FONTS:, the nearest size;
+   topaz is built in. Its accessor count goes up as OpenDiskFont() does. */
+uint32_t diskfont_open(const char *name, int ysize) {
+    if (!strcasecmp(font_file(name), "topaz.font") || !strcasecmp(font_file(name), "topaz")) return gfx_open_font("topaz.font", ysize);
+    uint32_t tf = font_in_memory(name, ysize, 1);
+    if (!tf) tf = load_font(name, ysize);
+    if (!tf) tf = font_in_memory(name, ysize, 0);
+    if (tf) wr16(tf + TextFont_tf_Accessors, rd16(tf + TextFont_tf_Accessors) + 1);
+    return tf;
+}
+
+/* the fonts of FONTS: (and the built-in topaz): name, size, proportional or not */
+int diskfont_catalog(char names[][64], int *sizes, int *prop, int max) {
+    int n = 0;
+    for (int s = 8; s <= 9 && n < max; s++) { snprintf(names[n], 64, "topaz.font"); sizes[n] = s; prop[n] = 0; n++; }
+    char hp[2048];
+    DIR *d = dos_resolve("FONTS:", hp, sizeof hp) ? opendir(hp) : 0;
+    struct dirent *de;
+    char found[256][64];
+    int nf = 0;
+    while (d && (de = readdir(d)) && nf < 256) {
+        size_t l = strlen(de->d_name);
+        if (l >= 6 && !strcasecmp(de->d_name + l - 5, ".font")) snprintf(found[nf++], 64, "%s", de->d_name);
+    }
+    if (d) closedir(d);
+    qsort(found, (size_t)nf, 64, (int (*)(const void *, const void *))strcasecmp);
+    for (int i = 0; i < nf; i++) {
+        FC fc[64];
+        int k = read_contents(found[i], fc, 64);
+        for (int j = 1; j < k; j++)                              /* smallest first */
+            for (int m = j; m > 0 && fc[m - 1].ysize > fc[m].ysize; m--) { FC t = fc[m]; fc[m] = fc[m - 1]; fc[m - 1] = t; }
+        for (int j = 0; j < k && n < max; j++) {
+            snprintf(names[n], 64, "%s", found[i]);
+            sizes[n] = fc[j].ysize;
+            prop[n] = (fc[j].flags & 0x20) != 0;                 /* FPF_PROPORTIONAL */
+            n++;
+        }
+    }
+    return n;
+}
+
 /* AvailFonts(buffer, bufBytes, flags): 0, or how many more bytes are needed */
 static uint32_t df_AvailFonts(M68K *c) {
     uint32_t buf = c->a[0], size = c->d[0], flags = c->d[1];

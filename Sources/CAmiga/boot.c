@@ -44,6 +44,7 @@ int os_boot(const char *sysdir) {
     char abs[1024];
     dos_init(realpath(sysdir, abs) ? abs : sysdir);
     reqtools_init();
+    { extern void fontprefs_load(void); fontprefs_load(); }      /* after dos: ENV: and FONTS: */
     shell_init();
     return 1;
 }

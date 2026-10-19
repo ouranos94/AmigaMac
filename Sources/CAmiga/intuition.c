@@ -86,17 +86,6 @@ static void bevel(BM *b, int x0, int y0, int x1, int y1, int shine, int shadow, 
     vline(b, x1, y0 + 1, y1, d);
 }
 
-static void bm_text(BM *b, int x, int y, const char *s, int pen) {
-    /* y = top of the 8-pixel cell, built-in font */
-    for (; *s; s++, x += 8) {
-        extern const uint8_t font8_data[256][8];
-        const uint8_t *g = font8_data[(uint8_t)*s];
-        for (int r = 0; r < 8; r++)
-            for (int col = 0; col < 8; col++)
-                if (g[r] & (0x80 >> col)) bm_pixel(b, x + col, y + r, pen, JAM1, 0xFF);
-    }
-}
-
 /* ---- screens ---------------------------------------------------------------- */
 
 void draw_screen_bar(NScreen *s) {
@@ -108,7 +97,7 @@ void draw_screen_bar(NScreen *s) {
     hline(&b, 0, s->w - 1, bh, s->pens[BARTRIMPEN]);
     char title[128];
     str_get(rd32(s->scr + Screen_Title), title, sizeof title);
-    bm_text(&b, rd8(s->scr + Screen_BarHBorder), (bh - 8) / 2 + 1, title, s->pens[BARDETAILPEN]);
+    bm_font_text(&b, rd8(s->scr + Screen_BarHBorder), (bh - rd16(s->font + TextFont_tf_YSize)) / 2 + 1, title, s->pens[BARDETAILPEN], s->font);
     /* screen depth gadget */
     int gx = s->w - 23;
     bevel(&b, gx, 0, s->w - 1, bh - 1, s->pens[SHINEPEN], s->pens[SHADOWPEN], 0);
@@ -159,7 +148,7 @@ static uint32_t tag_value(uint32_t tags, uint32_t tag, uint32_t def) {
 extern int gfx_mode_info(uint32_t id, int *w, int *h, int *res, int *lace);
 
 static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char *title,
-                            int type, int showtitle, uint32_t pens, int workbench) {
+                            int type, int showtitle, uint32_t pens, int workbench, uint32_t font) {
     if (depth < 1) depth = 1;
     int mw, mh, hires = 1, lace = 0;
     if (!gfx_mode_info(modeid, &mw, &mh, &hires, &lace)) { modeid = 0x00029000; hires = 1; lace = 0; }
@@ -177,7 +166,8 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     uint32_t t = str_alloc(title);
     wr32(scr + Screen_Title, t);
     wr32(scr + Screen_DefaultTitle, t);
-    uint32_t font = gfx_default_font();
+    if (!font) font = workbench ? font_screen() : gfx_default_font();
+    s->font = font;
     int fh = rd16(font + TextFont_tf_YSize);
     wr8(scr + Screen_BarHeight, fh + 4);                      /* bars with room around the text */
     wr8(scr + Screen_BarVBorder, 1);
@@ -215,6 +205,7 @@ static NScreen *open_screen(int w, int h, int depth, uint32_t modeid, const char
     else for (int i = 0; i < depth; i++) wr32(bm + BitMap_Planes + 4 * i, exec_allocmem((uint32_t)(bpr * h), MEMF_CHIP | MEMF_CLEAR));
     uint32_t rp = scr + Screen_RastPort;
     rp_init(rp);
+    rp_set_font(rp, font);
     wr32(rp + RastPort_BitMap, bm);
     /* pens and palette */
     for (int i = 0; i < NUMDRIPENS; i++) s->pens[i] = wb_pens[i];
@@ -288,7 +279,7 @@ NScreen *workbench_screen(int open_it) {
     if (w < 320 || w > 4096) w = mw;                           /* 0 or STDSCREENWIDTH: the mode's size */
     if (h < 200 || h > 4096) h = mh;
     if (depth < 1 || depth > 32) depth = 24;
-    NScreen *wbs = open_screen(w, h, depth, id, "AmigaMac Workbench", 1 /* WBENCHSCREEN */, 1, 0, 1);
+    NScreen *wbs = open_screen(w, h, depth, id, "AmigaMac Workbench", 1 /* WBENCHSCREEN */, 1, 0, 1, 0);
     gfx_set_default_palette(wbs->pal);
     return wbs;
 }
@@ -330,7 +321,12 @@ static uint32_t i_OpenScreenTagList(M68K *c) {
     uint32_t cbm = (ns && (type & 0x40)) ? rd32(ns + NewScreen_CustomBitMap) : 0;   /* CUSTOMBITMAP */
     cbm = tag_value(tags, 0x8000002E /* SA_BitMap */, cbm);
     if (cbm) depth = rd8(cbm + BitMap_Depth);
-    NScreen *s = open_screen(w, h, depth, id, t, type & 0xF, showtitle, pens, 0);
+    /* its font: SA_Font (or the NewScreen's), SA_SysFont 1 the screens' preferred one,
+       else the system's default */
+    uint32_t ta = tag_value(tags, 0x8000002B /* SA_Font */, ns ? rd32(ns + NewScreen_Font) : 0);
+    uint32_t font = ta ? font_from_attr(ta) : 0;
+    if (!font && tag_value(tags, 0x8000002C /* SA_SysFont */, 0) == 1) font = font_screen();
+    NScreen *s = open_screen(w, h, depth, id, t, type & 0xF, showtitle, pens, 0, font);
     if (cbm) {
         /* the program's BitMap is the display: the screen's own planes go */
         uint32_t bm = s->scr + Screen_BitMap;
@@ -463,10 +459,10 @@ void draw_frame(NWindow *w) {
         }
         char title[128];
         str_get(rd32(win + Window_Title), title, sizeof title);
-        int maxc = (W - cw - dw - zw - 8) / 8;
-        if (maxc < 0) maxc = 0;
-        if ((int)strlen(title) > maxc) title[maxc] = 0;
-        bm_text(&b, cw + 6, (bt - 8) / 2, title, active ? s->pens[FILLTEXTPEN] : s->pens[TEXTPEN]);
+        int room = W - cw - dw - zw - 8, n = (int)strlen(title);
+        while (n > 0 && font_text_width(s->font, title, n) > room) n--;
+        title[n] = 0;
+        bm_font_text(&b, cw + 6, (bt - rd16(s->font + TextFont_tf_YSize)) / 2, title, active ? s->pens[FILLTEXTPEN] : s->pens[TEXTPEN], s->font);
     }
     if (fl & WFLG_SIZEGADGET) {                                 /* size: a corner, bottom right */
         int gx = W - (br > 4 ? br : 18), gy = H - (bb > 2 ? bb : 10);
@@ -687,7 +683,7 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
     wr16(win + Window_GZZWidth, (uint32_t)(w - bl - br));
     wr16(win + Window_GZZHeight, (uint32_t)(h - bt - bb));
     wr32(win + Window_WLayer, layer);
-    wr32(win + Window_IFont, gfx_default_font());
+    wr32(win + Window_IFont, s->font);
     wr32(win + Window_WindowPort, ireply_port);
     if (idcmp) { wr32(win + Window_UserPort, new_port_for(nwn->task)); nwn->own_port = 1; }
     if (flags & WFLG_GIMMEZEROZERO) {
@@ -707,6 +703,7 @@ uint32_t open_window(M68K *c, uint32_t nw, uint32_t tags) {
     }
 
     rp_init(rp);
+    rp_set_font(rp, s->font);                                   /* a window's text: its screen's font */
     wr32(rp + RastPort_BitMap, bm);
     wr32(rp + RastPort_Layer, layer);
     wr8(rp + RastPort_FgPen, s->pens[TEXTPEN]);

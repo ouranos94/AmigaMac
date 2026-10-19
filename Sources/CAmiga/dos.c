@@ -335,12 +335,15 @@ static void fh_close(uint32_t bfh) {
         char env[1100];
         snprintf(env, sizeof env, "%s/Env/Sys/screenmode.prefs", ram_dir);
         prefs = !strcasecmp(h->path, env);
+        snprintf(env, sizeof env, "%s/Env/Sys/font.prefs", ram_dir);
+        if (!strcasecmp(h->path, env)) prefs = 2;
     }
     if (h->con) { NTask *me = sched_current(); if (me) con_close(&me->cpu, h->con); h->con = 0; }
     if (h->f && !h->console) fclose(h->f);
     h->used = 0;
     exec_freemem(BADDR(bfh), FH_SIZE);
-    if (prefs) { extern void intuition_screenmode_changed(void); intuition_screenmode_changed(); }
+    if (prefs == 1) { extern void intuition_screenmode_changed(void); intuition_screenmode_changed(); }
+    if (prefs == 2) { extern void fontprefs_changed(void); fontprefs_changed(); }
 }
 
 /* console input comes from the host as an event queue; a reader only

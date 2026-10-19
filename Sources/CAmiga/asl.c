@@ -76,6 +76,7 @@ typedef struct AslReq {
     int fsize, fstyle, fpen, bpen;
     uint32_t smid;
     int depth;
+    int fixed, minh, maxh;             /* font requester: fixed width only, sizes allowed */
     uint32_t lock;                     /* wa_Lock handed back */
     struct AslReq *next;
 } AslReq;
@@ -110,6 +111,9 @@ static void apply_tags(AslReq *a, uint32_t tags) {
         case 12: a->fstyle = (int)d; break;
         case 14: a->fpen = (int)d; break;
         case 15: a->bpen = (int)d; break;
+        case 16: if (a->type == FONT_REQ) a->minh = (int)d; break;
+        case 17: if (a->type == FONT_REQ) a->maxh = (int)d; break;
+        case 48: if (a->type == FONT_REQ) a->fixed = d != 0; break;
         case 18: if (d) str_get(d, a->ok, sizeof a->ok); break;
         case 19: if (d) str_get(d, a->cancel, sizeof a->cancel); break;
         case 20: if (a->type == FILE_REQ) a->flags1 = d; break;
@@ -443,24 +447,158 @@ static int run_list(M68K *c, AslReq *a, const char *deftitle, const char **items
     return result;
 }
 
+/* the fonts of FONTS: and topaz: a list of names, the sizes of the one chosen, a sample */
+extern int diskfont_catalog(char names[][64], int *sizes, int *prop, int max);
+extern uint32_t diskfont_open(const char *name, int ysize);
+enum { F_NAMES = 1, F_SIZES, F_OK = 5, F_CANCEL = 8 };
+
+static uint32_t simple_list(EntList *l, char items[][64], int n) {
+    ents_free(l);
+    for (int i = 0; i < n; i++) ents_add(l, items[i], 0);
+    l->mem = ents_list(l, 63);
+    return l->mem;
+}
+
 static int run_font(M68K *c, AslReq *a) {
-    static const char *items[] = { "topaz 8", "topaz 9" };
-    uint32_t r = a->req;
-    int sel = a->fsize == 9 ? 1 : 0;
-    int i = run_list(c, a, "Choisissez une police", items, 2, sel);
-    if (i < 0) return 0;
-    put_cstr(r + B_FONT, "topaz.font", 64);
-    for (int k = 0; k < 2; k++) {
-        uint32_t ta = r + (k ? FO_TATTR : FO_ATTR);
-        wr32(ta, r + B_FONT);
-        wr16(ta + 4, i ? 9 : 8);
-        wr8(ta + 6, (uint32_t)a->fstyle);
-        wr8(ta + 7, 0);
+    static char cn[512][64];
+    static int cs[512], cp[512];
+    int nc = diskfont_catalog(cn, cs, cp, 512);
+    /* the families offered, and the sizes allowed */
+    char fam[128][64];
+    int nf = 0;
+    for (int i = 0; i < nc; i++) {
+        if (a->fixed && cp[i]) continue;
+        if (a->minh && cs[i] < a->minh) continue;
+        if (a->maxh && cs[i] > a->maxh) continue;
+        char nm[64];
+        snprintf(nm, sizeof nm, "%s", cn[i]);
+        char *dot = strrchr(nm, '.');
+        if (dot && !strcasecmp(dot, ".font")) *dot = 0;
+        int k = 0;
+        while (k < nf && strcasecmp(fam[k], nm)) k++;
+        if (k == nf && nf < 128) snprintf(fam[nf++], 64, "%s", nm);
     }
-    wr8(r + FO_FRONTPEN, (uint32_t)a->fpen);
-    wr8(r + FO_BACKPEN, (uint32_t)a->bpen);
-    wr8(r + FO_DRAWMODE, JAM1);
-    return 1;
+    if (!nf) return 0;
+    char want[64];
+    str_get(a->req + B_FONT, want, sizeof want);
+    char *dot = strrchr(want, '.');
+    if (dot && !strcasecmp(dot, ".font")) *dot = 0;
+    int cur = 0, size = a->fsize > 0 ? a->fsize : 8;
+    for (int k = 0; k < nf; k++) if (!strcasecmp(fam[k], want)) cur = k;
+
+    NScreen *s = pick_screen(a);
+    if (!s) return 0;
+    Arena A = { 0 };
+    if (!a->title[0]) snprintf(a->title, sizeof a->title, "Choisissez une police");
+    int fh = rd16((s->font ? s->font : gfx_default_font()) + TextFont_tf_YSize);
+    uint32_t win = open_req_window(c, &A, s, a, 380, 160 + 10 * fh);
+    if (!win) { ar_free(&A); return 0; }
+    int bl = rd8(win + Window_BorderLeft), bt = rd8(win + Window_BorderTop), br = rd8(win + Window_BorderRight), bb = rd8(win + Window_BorderBottom);
+    int W = (int16_t)rd16(win + Window_Width), H = (int16_t)rd16(win + Window_Height), iw = W - bl - br;
+    uint32_t vi = lib_call(c, GadToolsBase, "gadtools", "GetVisualInfoA", s->scr, 0);
+    uint32_t glist = ar_alloc(&A, 4);
+    uint32_t g = lib_call(c, GadToolsBase, "gadtools", "CreateContext", glist);
+    int bh = fh + 6, by = H - bb - 4 - bh, sampleh = 48, sy = by - 6 - sampleh;
+    int ly = bt + 4, lh = sy - 6 - ly, nw = (iw - 18) * 2 / 3, sw = iw - 18 - nw;
+    EntList ln = { 0 }, ls = { 0 };
+    char sizes_txt[64][64];
+    int sizes_v[64], nsz = 0;
+#define FILL_SIZES() do { \
+        nsz = 0; \
+        for (int i_ = 0; i_ < nc && nsz < 64; i_++) { \
+            char f_[64]; snprintf(f_, sizeof f_, "%s.font", fam[cur]); \
+            if (strcasecmp(cn[i_], f_) || (a->fixed && cp[i_]) || (a->minh && cs[i_] < a->minh) || (a->maxh && cs[i_] > a->maxh)) continue; \
+            sizes_v[nsz] = cs[i_]; snprintf(sizes_txt[nsz], 64, "%d", cs[i_]); nsz++; \
+        } \
+    } while (0)
+    FILL_SIZES();
+    int si = 0;
+    for (int i = 0; i < nsz; i++) if (abs(sizes_v[i] - size) < abs(sizes_v[si] - size)) si = i;
+    uint32_t gnames = g = new_gadget(c, &A, LISTVIEW_KIND, g, vi, bl + 6, ly, nw, lh, 0, F_NAMES, 0,
+                                     ar_tags(&A, GTLV_Labels, simple_list(&ln, fam, nf), GTLV_ShowSelected, 0, GTLV_Selected, (uint32_t)cur, GTLV_Top, (uint32_t)cur, 0));
+    uint32_t gsizes = g = new_gadget(c, &A, LISTVIEW_KIND, g, vi, bl + 12 + nw, ly, sw, lh, 0, F_SIZES, 0,
+                                     ar_tags(&A, GTLV_Labels, simple_list(&ls, sizes_txt, nsz), GTLV_ShowSelected, 0, GTLV_Selected, (uint32_t)si, 0));
+    int bw = (iw - 12 - 8) / 2;
+    g = new_gadget(c, &A, BUTTON_KIND, g, vi, bl + 6, by, bw, bh, a->ok[0] ? a->ok : "OK", F_OK, PLACETEXT_IN, 0);
+    g = new_gadget(c, &A, BUTTON_KIND, g, vi, bl + 6 + bw + 8, by, bw, bh, a->cancel[0] ? a->cancel : "Annuler", F_CANCEL, PLACETEXT_IN, 0);
+    uint32_t first = rd32(glist);
+    lib_call(c, IntuitionBase, "intuition", "AddGList", win, first, 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
+    lib_call(c, IntuitionBase, "intuition", "RefreshGList", first, win, 0, 0xFFFFFFFFu);
+    uint32_t rp = rd32(win + Window_RPort);
+    uint32_t ofont = rd32(rp + RastPort_Font);
+#define SAMPLE() do { \
+        rp_fill(rp, bl + 6, sy, bl + iw - 7, sy + sampleh - 1, s->pens[BACKGROUNDPEN], 0); \
+        if (nsz) { \
+            char f_[80]; snprintf(f_, sizeof f_, "%s.font", fam[cur]); \
+            uint32_t tf_ = diskfont_open(f_, sizes_v[si]); \
+            if (tf_) { \
+                rp_set_font(rp, tf_); \
+                wr8(rp + RastPort_FgPen, s->pens[TEXTPEN]); wr8(rp + RastPort_DrawMode, JAM1); \
+                static const char smp[] = "AaBbCc \xe9\xe8\xe0\xe7 0123"; \
+                int y_ = sy + (sampleh - rd16(tf_ + TextFont_tf_YSize)) / 2 + rd16(tf_ + TextFont_tf_Baseline); \
+                rp_move(rp, bl + 10, y_); rp_text(rp, smp, (int)sizeof smp - 1); \
+                rp_set_font(rp, ofont); \
+            } \
+        } \
+        gfx_touch(); \
+    } while (0)
+    SAMPLE();
+    int done = 0, result = 0, last = -1;
+    uint32_t lsec = 0, lmic = 0;
+    while (!done) {
+        exec_wait(ntk_sigmask(win));
+        NMsg m;
+        while (!done && ntk_getmsg(win, &m)) {
+            if (m.cls == IDCMP_CLOSEWINDOW || (m.cls == IDCMP_VANILLAKEY && m.code == 27)) { done = 1; break; }
+            if (m.cls == IDCMP_VANILLAKEY && m.code == 13) { result = nsz > 0; done = 1; break; }
+            if (m.cls != IDCMP_GADGETUP) continue;
+            int id = (int)rd16(m.iaddr + Gadget_GadgetID);
+            if (id == F_NAMES && (int)m.code < nf) {
+                cur = (int)m.code;
+                int old = nsz ? sizes_v[si] : size;
+                FILL_SIZES();
+                si = 0;
+                for (int i = 0; i < nsz; i++) if (abs(sizes_v[i] - old) < abs(sizes_v[si] - old)) si = i;
+                set_gattr(c, &A, gsizes, win, GTLV_Labels, 0xFFFFFFFFu);
+                uint32_t t_ = ar_tags(&A, GTLV_Labels, simple_list(&ls, sizes_txt, nsz), GTLV_Selected, (uint32_t)si, GTLV_Top, 0, 0);
+                lib_call(c, GadToolsBase, "gadtools", "GT_SetGadgetAttrsA", gsizes, win, 0, t_);
+                SAMPLE();
+            } else if (id == F_SIZES && (int)m.code < nsz) {
+                si = (int)m.code;
+                SAMPLE();
+                if (last == si && ntk_double_click(lsec, lmic, m.secs, m.micros)) { result = 1; done = 1; }
+                last = si; lsec = m.secs; lmic = m.micros;
+            } else if (id == F_OK) { result = nsz > 0; done = 1; }
+            else if (id == F_CANCEL) done = 1;
+        }
+    }
+    (void)gnames;
+    if (result) {
+        uint32_t r = a->req;
+        char f[80];
+        snprintf(f, sizeof f, "%s.font", fam[cur]);
+        put_cstr(r + B_FONT, f, 64);
+        for (int k = 0; k < 2; k++) {
+            uint32_t ta = r + (k ? FO_TATTR : FO_ATTR);
+            wr32(ta, r + B_FONT);
+            wr16(ta + 4, (uint32_t)sizes_v[si]);
+            wr8(ta + 6, (uint32_t)a->fstyle);
+            wr8(ta + 7, 0);
+        }
+        wr8(r + FO_FRONTPEN, (uint32_t)a->fpen);
+        wr8(r + FO_BACKPEN, (uint32_t)a->bpen);
+        wr8(r + FO_DRAWMODE, JAM1);
+        a->fsize = sizes_v[si];
+    }
+    lib_call(c, IntuitionBase, "intuition", "CloseWindow", win);
+    lib_call(c, GadToolsBase, "gadtools", "FreeGadgets", rd32(glist));
+    lib_call(c, GadToolsBase, "gadtools", "FreeVisualInfo", vi);
+    ents_free(&ln); free(ln.e);
+    ents_free(&ls); free(ls.e);
+    ar_free(&A);
+    return result;
+#undef FILL_SIZES
+#undef SAMPLE
 }
 
 static int run_screenmode(M68K *c, AslReq *a) {

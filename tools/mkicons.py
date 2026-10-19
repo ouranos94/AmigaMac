@@ -205,6 +205,21 @@ def floppy():
     c.shadow()
     return c
 
+def fontprefs():
+    c = Canvas(44, 38)
+    c.vgrad(5, 3, 36, 32, rgb(0xFBFBF8), rgb(0xDAD8D0))                     # a page
+    c.frame(5, 3, 36, 32, OUT)
+    a = [(9, 26), (14, 8), (18, 8), (23, 26), (19, 26), (18, 22), (14, 22), (13, 26)]   # a large A
+    c.poly(a, rgb(0x2A3C8C))
+    c.rect(15, 17, 17, 18, rgb(0xFBFBF8))
+    c.ellipse(29, 22, 4, 4, rgb(0xC03A2A))                                    # and a small a
+    c.ellipse(29, 22, 2, 2, rgb(0xF2F0EA))
+    c.rect(32, 18, 33, 26, rgb(0xC03A2A))
+    for y in (29,):
+        c.rect(9, y, 32, y, rgb(0x9AA6C8))
+    c.shadow()
+    return c
+
 def ramdisk():
     c = Canvas(48, 30)
     c.vgrad(2, 4, 44, 22, rgb(0x3CA854), rgb(0x1E6E34))                      # the board
@@ -423,3 +438,4 @@ if __name__ == '__main__':
     write_info(os.path.join(ROOT, 'Trashcan.info'), trashcan(), WBGARBAGE, drawer=True)
     write_info(os.path.join(ROOT, 'System', 'Shell.info'), shell(), WBTOOL)
     write_info(os.path.join(ROOT, 'Prefs', 'ScreenMode.info'), screenmode(), WBTOOL)
+    write_info(os.path.join(ROOT, 'Prefs', 'Font.info'), fontprefs(), WBTOOL)

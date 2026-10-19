@@ -250,7 +250,7 @@ static WIcon *add_icon(WBWin *w, const char *name, const char *path, const char 
     ic->dobj = dobj;
     ic->type = type;
     icon_size(dobj, &ic->w, &ic->h);
-    ic->lw = (int)strlen(ic->label) * 8;
+    ic->lw = font_text_width(font_workbench(), ic->label, (int)strlen(ic->label));
     uint32_t cx = rd32(dobj + DiskObject_do_CurrentX), cy = rd32(dobj + DiskObject_do_CurrentY);
     if (cx != NO_POS && cy != NO_POS && (int32_t)cx > -1000 && (int32_t)cx < 4000 && (int32_t)cy > -1000 && (int32_t)cy < 4000) {
         ic->x = (int32_t)cx; ic->y = (int32_t)cy; ic->fixed = 1;
@@ -357,7 +357,7 @@ static void icon_bounds(WIcon *ic, int *x0, int *y0, int *x1, int *y1) {
     *x0 = ic->x < lx ? ic->x : lx;
     *x1 = ic->x + ic->w > lx + ic->lw ? ic->x + ic->w : lx + ic->lw;
     *y0 = ic->y;
-    *y1 = ic->y + ic->h + 10;
+    *y1 = ic->y + ic->h + 2 + rd16(font_workbench() + TextFont_tf_YSize);
 }
 
 /* a place for an icon (box bw x h, label under it) that a positioned icon already takes */
@@ -376,7 +376,8 @@ static void layout(WBWin *w) {
     inner(w, &bl, &bt, &iw, &ih);
     if (w->by_name) {
         int y = 2;
-        for (WIcon *ic = w->icons; ic; ic = ic->next) { ic->y = y; y += 9; }
+        int lh = rd16(gfx_default_font() + TextFont_tf_YSize) + 1;   /* the list: the system's text */
+        for (WIcon *ic = w->icons; ic; ic = ic->next) { ic->y = y; y += lh; }
         w->cw = iw;
         w->ch = y + 2;
     } else {
@@ -386,7 +387,7 @@ static void layout(WBWin *w) {
         WIcon *row[256];
 #define END_ROW() do { \
             for (int k_ = 0; k_ < nrow; k_++) row[k_]->y = y + (rowh - row[k_]->h); \
-            y += rowh ? rowh + 16 : 8; \
+            y += rowh ? rowh + 8 + rd16(font_workbench() + TextFont_tf_YSize) : 8; \
             x = 8; nrow = 0; rowh = 0; \
         } while (0)
         for (WIcon *ic = w->icons; ic; ic = ic->next) {
@@ -604,9 +605,12 @@ static void redraw(WBWin *w) {
             }
     }
     if (w->by_name && !w->backdrop) {
+        uint32_t tf = gfx_default_font();
+        int fh = rd16(tf + TextFont_tf_YSize), base = rd16(tf + TextFont_tf_Baseline);
+        rp_set_font(w->rp, tf);
         for (WIcon *ic = w->icons; ic; ic = ic->next) {
             int y = ic->y - w->sy;
-            if (y + 9 < 0 || y > ih) continue;
+            if (y + fh + 1 < 0 || y > ih) continue;
             char line[160], size[32] = "";
             if (ic->type == WBDRAWER) snprintf(size, sizeof size, "(tiroir)");
             else {
@@ -615,12 +619,13 @@ static void redraw(WBWin *w) {
                 if (host_of(ic->path, hp, sizeof hp) && !stat(hp, &st)) snprintf(size, sizeof size, "%lld", (long long)st.st_size);
             }
             snprintf(line, sizeof line, "%-28.28s %12s", ic->label, size);
-            if (ic->selected) rp_fill(w->rp, 2, y, iw - 3, y + 8, s->pens[FILLPEN], 0);
+            if (ic->selected) rp_fill(w->rp, 2, y, iw - 3, y + fh, s->pens[FILLPEN], 0);
             wr8(w->rp + RastPort_FgPen, ic->selected ? s->pens[FILLTEXTPEN] : s->pens[TEXTPEN]);
             wr8(w->rp + RastPort_DrawMode, JAM1);
-            rp_move(w->rp, 6, y + 7);
+            rp_move(w->rp, 6, y + base + 1);
             rp_text(w->rp, line, (int)strlen(line));
         }
+        rp_set_font(w->rp, font_workbench());
     } else {
         for (WIcon *ic = w->icons; ic; ic = ic->next) {
             int x0, y0, x1, y1;
@@ -649,6 +654,7 @@ static void attach(WBWin *w) {
     if (wb.menus) lib_call(wb.c, IntuitionBase, "intuition", "SetMenuStrip", w->win, wb.menus);
     w->rp = ar_alloc(&w->A, RastPort_SIZEOF + 4);
     rp_init(w->rp);
+    rp_set_font(w->rp, font_workbench());                       /* the icons' labels: the Workbench font */
     w->next = wb.wins;
     wb.wins = w;
 }

@@ -117,7 +117,7 @@ int main(void)
     APTR vi;
     ULONG cur_id = 0x50031000;                     /* the default: AmigaMac 1280x720 */
     UWORD cur_depth = 24;
-    int sel = 0, depth_idx, top, i, W = 400, H = 160, action = 0;
+    int sel = 0, depth_idx, top, i, W = 400, H = 160, action = 0, fh, bh;
 
     if (!scr) return 20;
     vi = GetVisualInfo(scr, TAG_DONE);
@@ -128,27 +128,30 @@ int main(void)
     depth_idx = 7;
     for (i = 0; i < 10; i++) if (depths[i] == cur_depth) depth_idx = i;
 
-    top = scr->WBorTop + scr->Font->ta_YSize + 1;
+    fh = scr->Font->ta_YSize;                      /* everything follows the screen's font */
+    bh = fh + 6;
+    top = scr->WBorTop + fh + 1;
+    H = top + fh + 6 + 10 * (fh + 1) + 4 + 12 + bh + 10;
     g = CreateContext(&glist);
     memset(&ng, 0, sizeof ng);
     ng.ng_VisualInfo = vi;
     ng.ng_TextAttr = scr->Font;
 
-    ng.ng_LeftEdge = 12; ng.ng_TopEdge = top + 18; ng.ng_Width = 220; ng.ng_Height = 88;
+    ng.ng_LeftEdge = 12; ng.ng_TopEdge = top + fh + 8; ng.ng_Width = 220; ng.ng_Height = 10 * (fh + 1) + 4;
     ng.ng_GadgetText = "Mode d'\xe9""cran"; ng.ng_GadgetID = ID_LIST; ng.ng_Flags = PLACETEXT_ABOVE;
     g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, &list, GTLV_ShowSelected, NULL,
                      GTLV_Selected, sel, GTLV_MakeVisible, sel, TAG_DONE);
 
-    ng.ng_LeftEdge = 320; ng.ng_TopEdge = top + 18; ng.ng_Width = 64; ng.ng_Height = 12;
+    ng.ng_LeftEdge = 320; ng.ng_TopEdge = top + fh + 8; ng.ng_Width = 64; ng.ng_Height = fh + 4;
     ng.ng_GadgetText = "Largeur"; ng.ng_GadgetID = ID_WIDTH; ng.ng_Flags = PLACETEXT_LEFT;
     gw = g = CreateGadget(NUMBER_KIND, g, &ng, GTNM_Number, nmodes ? widths[sel] : 0, GTNM_Border, TRUE, TAG_DONE);
-    ng.ng_TopEdge += 16; ng.ng_GadgetText = "Hauteur"; ng.ng_GadgetID = ID_HEIGHT;
+    ng.ng_TopEdge += fh + 8; ng.ng_GadgetText = "Hauteur"; ng.ng_GadgetID = ID_HEIGHT;
     gh = g = CreateGadget(NUMBER_KIND, g, &ng, GTNM_Number, nmodes ? heights[sel] : 0, GTNM_Border, TRUE, TAG_DONE);
-    ng.ng_TopEdge += 36; ng.ng_Height = 14; ng.ng_Width = 140; ng.ng_LeftEdge = 248; ng.ng_GadgetText = "Couleurs"; ng.ng_GadgetID = ID_COLORS;
+    ng.ng_TopEdge += 2 * fh + 20; ng.ng_Height = bh; ng.ng_Width = 140; ng.ng_LeftEdge = 248; ng.ng_GadgetText = "Couleurs"; ng.ng_GadgetID = ID_COLORS;
     ng.ng_Flags = PLACETEXT_ABOVE;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, colors, GTCY_Active, depth_idx, TAG_DONE);
 
-    ng.ng_TopEdge = top + H - top - 22; ng.ng_Width = 100; ng.ng_Height = 14; ng.ng_Flags = PLACETEXT_IN;
+    ng.ng_TopEdge = H - bh - 8; ng.ng_Width = 100; ng.ng_Height = bh; ng.ng_Flags = PLACETEXT_IN;
     ng.ng_LeftEdge = 12; ng.ng_GadgetText = "_Sauver"; ng.ng_GadgetID = ID_SAVE;
     g = CreateGadget(BUTTON_KIND, g, &ng, GT_Underscore, '_', TAG_DONE);
     ng.ng_LeftEdge = (W - 100) / 2; ng.ng_GadgetText = "_Utiliser"; ng.ng_GadgetID = ID_USE;

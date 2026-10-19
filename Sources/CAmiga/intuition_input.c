@@ -86,9 +86,12 @@ void draw_itext(uint32_t rp, uint32_t it, int left, int top) {
     }
 }
 
+/* IntuiTextLength(): in its ITextFont, else the system's default font */
 int itext_length(uint32_t it) {
     char buf[256];
-    return str_get(rd32(it + IntuiText_IText), buf, sizeof buf) * 8;
+    int n = str_get(rd32(it + IntuiText_IText), buf, sizeof buf);
+    uint32_t tf = font_from_attr(rd32(it + IntuiText_ITextFont));
+    return font_text_width(tf ? tf : gfx_default_font(), buf, n);
 }
 
 /* ---- gadgets ----------------------------------------------------------------- */
@@ -204,10 +207,13 @@ static void render_gadget(NWindow *w, uint32_t g) {
             char buf[512];
             int n = str_get(rd32(si + StringInfo_Buffer), buf, sizeof buf);
             int disp = (int16_t)rd16(si + StringInfo_DispPos), pos = (int16_t)rd16(si + StringInfo_BufferPos);
-            int cols = gw / 8;
+            uint32_t tf = rd32(rp + RastPort_Font);
+            int fh = rd16(tf + TextFont_tf_YSize), fw = rd16(tf + TextFont_tf_XSize);
             if (pos < disp) disp = pos;
-            if (pos >= disp + cols) disp = pos - cols + 1;
+            while (disp < pos && font_text_width(tf, buf + disp, pos - disp) + fw > gw) disp++;   /* the cursor in view */
             if (disp < 0) disp = 0;
+            int cols = 0;                                       /* the characters that fit */
+            while (disp + cols < n && font_text_width(tf, buf + disp, cols + 1) <= gw) cols++;
             wr16(si + StringInfo_DispPos, (uint32_t)disp);
             wr16(si + StringInfo_NumChars, (uint32_t)n);
             uint32_t ofg = rd8(rp + RastPort_FgPen), obg = rd8(rp + RastPort_BgPen), omode = rd8(rp + RastPort_DrawMode);
@@ -215,13 +221,14 @@ static void render_gadget(NWindow *w, uint32_t g) {
             wr8(rp + RastPort_BgPen, s->pens[BACKGROUNDPEN]);
             wr8(rp + RastPort_DrawMode, JAM2);
             int shown = n - disp < cols ? n - disp : cols;
-            if (shown > 0) { rp_move(rp, x, y + 6 + (gh - 8) / 2); rp_text(rp, buf + disp, shown); }
+            if (shown > 0) { rp_move(rp, x, y + rd16(tf + TextFont_tf_Baseline) + (gh - fh) / 2); rp_text(rp, buf + disp, shown); }
             wr8(rp + RastPort_FgPen, ofg);
             wr8(rp + RastPort_BgPen, obg);
             wr8(rp + RastPort_DrawMode, omode);
             if (active_strgad == g) {                          /* cursor */
-                int cx = x + (pos - disp) * 8, cy = y + (gh - 8) / 2;
-                rp_fill(rp, cx, cy, cx + 7, cy + 7, 0, 1);
+                int cx = x + font_text_width(tf, buf + disp, pos - disp), cy = y + (gh - fh) / 2;
+                int cw = pos < n ? font_text_width(tf, buf + pos, 1) : fw;
+                rp_fill(rp, cx, cy, cx + cw - 1, cy + fh - 1, 0, 1);
             }
         }
         if (rd32(g + Gadget_GadgetRender)) draw_border(rp, rd32(g + Gadget_GadgetRender), x, y);
@@ -309,15 +316,27 @@ static void ov_invert(NScreen *s, int x0, int y0, int x1, int y1) {
         }
     }
 }
+/* menu text, in the screen's font: y is the top of the line */
 static void ov_text(NScreen *s, int x, int y, const char *t, int pen) {
-    for (; *t; t++, x += 8) {
-        const uint8_t *g = font8_data[(uint8_t)*t];
-        for (int r = 0; r < 8; r++)
-            for (int col = 0; col < 8; col++)
-                if ((g[r] & (0x80 >> col)) && x + col >= 0 && x + col < s->w && y + r >= 0 && y + r < s->h)
-                    s->ov[(size_t)(y + r) * s->w + x + col] = (uint8_t)pen;
+    uint32_t tf = s->font ? s->font : gfx_default_font();
+    int ysize = rd16(tf + TextFont_tf_YSize), mod = rd16(tf + TextFont_tf_Modulo);
+    int lo = rd8(tf + TextFont_tf_LoChar), hi = rd8(tf + TextFont_tf_HiChar);
+    uint32_t data = rd32(tf + TextFont_tf_CharData), loc = rd32(tf + TextFont_tf_CharLoc);
+    uint32_t space = rd32(tf + TextFont_tf_CharSpace), kern = rd32(tf + TextFont_tf_CharKern);
+    for (; *t; t++) {
+        int c = (uint8_t)*t, gi = (c < lo || c > hi) ? hi - lo + 1 : c - lo;
+        uint32_t l = rd32(loc + 4 * (uint32_t)gi);
+        int boff = (int)(l >> 16), bw = (int)(l & 0xFFFF), k = kern ? (int16_t)rd16(kern + 2 * (uint32_t)gi) : 0;
+        for (int r = 0; r < ysize; r++)
+            for (int col = 0; col < bw; col++) {
+                int bit = boff + col, px = x + k + col;
+                if (((rd8(data + (uint32_t)(r * mod + (bit >> 3))) >> (7 - (bit & 7))) & 1) && px >= 0 && px < s->w && y + r >= 0 && y + r < s->h)
+                    s->ov[(size_t)(y + r) * s->w + px] = (uint8_t)pen;
+            }
+        x += (space ? (int16_t)rd16(space + 2 * (uint32_t)gi) : rd16(tf + TextFont_tf_XSize)) + k;
     }
 }
+static int ov_fh(NScreen *s) { return rd16((s->font ? s->font : gfx_default_font()) + TextFont_tf_YSize); }
 static void ov_itext(NScreen *s, uint32_t it, int left, int top) {
     for (; it; it = rd32(it + IntuiText_NextText)) {
         char buf[128];
@@ -375,10 +394,10 @@ static void draw_items(NScreen *s, uint32_t first, int basex, int basey, int hi,
         uint32_t fl = rd16(it + MenuItem_Flags);
         uint32_t fill = (n == hi && (fl & HIGHFLAGS) == HIGHIMAGE && rd32(it + MenuItem_SelectFill)) ? rd32(it + MenuItem_SelectFill) : rd32(it + MenuItem_ItemFill);
         if (fl & ITEMTEXT) ov_itext(s, fill, ix, iy); else ov_image(s, fill, ix, iy);
-        if ((fl & CHECKIT) && (fl & CHECKED)) ov_text(s, ix, iy + (ih - 8) / 2, "\xb7", s->pens[BARDETAILPEN]);
+        if ((fl & CHECKIT) && (fl & CHECKED)) ov_text(s, ix, iy + (ih - ov_fh(s)) / 2, "\xb7", s->pens[BARDETAILPEN]);
         if (fl & COMMSEQ) {
             char key[3] = { (char)0xA4, (char)rd8(it + MenuItem_Command), 0 };   /* Amiga key + letter */
-            ov_text(s, ix + iw - 18, iy + (ih - 8) / 2, key, s->pens[BARDETAILPEN]);
+            ov_text(s, ix + iw - 4 - font_text_width(s->font, key, 2), iy + (ih - ov_fh(s)) / 2, key, s->pens[BARDETAILPEN]);
         }
         if (!(fl & ITEMENABLED))                               /* ghosted */
             for (int yy = iy; yy < iy + ih; yy++) for (int xx = ix + (yy & 1); xx < ix + iw; xx += 2) ov_fill(s, xx, yy, xx, yy, s->pens[BARBLOCKPEN]);
@@ -405,7 +424,7 @@ static void menu_draw(void) {
         char name[64];
         str_get(rd32(m + Menu_MenuName), name, sizeof name);
         int mx = (int16_t)rd16(m + Menu_LeftEdge), mw = (int16_t)rd16(m + Menu_Width);
-        ov_text(s, mx + 4, (bh - 8) / 2 + 1, name, s->pens[BARDETAILPEN]);
+        ov_text(s, mx + 4, (bh - ov_fh(s)) / 2 + 1, name, s->pens[BARDETAILPEN]);
         if (!(rd16(m + Menu_Flags) & MENUENABLED))
             for (int yy = 0; yy < bh; yy++) for (int xx = mx + (yy & 1); xx < mx + mw; xx += 2) ov_fill(s, xx, yy, xx, yy, s->pens[BARBLOCKPEN]);
         if (n == ms.menu) {
@@ -666,7 +685,9 @@ static void handle_button(NScreen *s, int x, int y, int code) {
                 gadget_box(w, g, &gx, &gy, &gw, &gh);
                 char text[512];
                 int n = str_get(rd32(si + StringInfo_Buffer), text, sizeof text);
-                int pos = (int16_t)rd16(si + StringInfo_DispPos) + (lx - gx) / 8;
+                uint32_t tf = rd32(w->rp + RastPort_Font);
+                int pos = (int16_t)rd16(si + StringInfo_DispPos);
+                while (pos < n && font_text_width(tf, text + rd16(si + StringInfo_DispPos), pos - (int16_t)rd16(si + StringInfo_DispPos) + 1) <= lx - gx) pos++;
                 wr16(si + StringInfo_BufferPos, (uint32_t)(pos > n ? n : pos));
                 active_strgad = g;
                 active_strwin = w;
@@ -1098,16 +1119,22 @@ static uint32_t mk_itext(const char *t, int pen) {
 /* body: lines separated by '\n'; buttons: labels; returns the window */
 static uint32_t build_request(M68K *c, uint32_t refwin, const char *title, const char *body, char labels[][64], int nb) {
     NScreen *s = refwin && nwin_of(refwin) ? nwin_of(refwin)->s : workbench_screen(1);
-    int lines = 1, maxw = 0, cur = 0;
-    for (const char *p = body; *p; p++) {
-        if (*p == '\n') { lines++; cur = 0; }
-        else if (++cur > maxw) maxw = cur;
-    }
+    uint32_t tf = s->font ? s->font : gfx_default_font();
+    int fh = rd16(tf + TextFont_tf_YSize), lh = fh + 1, bh = fh + 6;    /* a line, a button */
+    int lines = 1, maxw = 0;
+    for (const char *p = body, *ls = body;; p++)
+        if (*p == '\n' || !*p) {
+            int lw = font_text_width(tf, ls, (int)(p - ls));
+            if (lw > maxw) maxw = lw;
+            if (!*p) break;
+            lines++;
+            ls = p + 1;
+        }
     int bw = 0;
-    for (int i = 0; i < nb; i++) bw += ((int)strlen(labels[i]) * 8 + 16) + 12;
+    for (int i = 0; i < nb; i++) bw += font_text_width(tf, labels[i], (int)strlen(labels[i])) + 16 + 12;
     int bt = border_top(s);
-    int width = (maxw * 8 + 40 > bw + 20 ? maxw * 8 + 40 : bw + 20);
-    int height = bt + 12 + lines * 9 + 10 + 16 + 6;
+    int width = (maxw + 40 > bw + 20 ? maxw + 40 : bw + 20);
+    int height = bt + 12 + lines * lh + 10 + bh + 2 + 6;
     if (width > s->w) width = s->w;
     /* window through the normal path, so input and IDCMP work the same way */
     uint32_t tags = exec_allocmem(8 * 12, MEMF_PUBLIC | MEMF_CLEAR), t = tags;
@@ -1130,29 +1157,29 @@ static uint32_t build_request(M68K *c, uint32_t refwin, const char *title, const
     uint32_t rp = w->rp;
     wr8(rp + RastPort_FgPen, s->pens[TEXTPEN]);
     wr8(rp + RastPort_DrawMode, JAM1);
-    int y = bt + 12 + 6, ln = 0;
+    int y = bt + 12 + rd16(tf + TextFont_tf_Baseline), ln = 0;
     char line[256];
     for (const char *p = body;; p++) {
         if (*p == '\n' || !*p) {
             line[ln] = 0;
-            int lw = ln * 8;
+            int lw = font_text_width(tf, line, ln);
             rp_move(rp, (width - lw) / 2, y);
             rp_text(rp, line, ln);
-            y += 9;
+            y += lh;
             ln = 0;
             if (!*p) break;
         } else if (ln < 255) line[ln++] = *p;
     }
     /* buttons: ids 1..n-1 left to right, the last one is 0 */
-    int gx = 10, gy = height - 6 - 14, step = nb > 1 ? (width - 20 - (int)(strlen(labels[nb - 1]) * 8 + 16)) / (nb - 1) : 0;
+    int gx = 10, gy = height - 6 - bh, step = nb > 1 ? (width - 20 - (font_text_width(tf, labels[nb - 1], (int)strlen(labels[nb - 1])) + 16)) / (nb - 1) : 0;
     uint32_t first = 0, prev = 0;
     for (int i = 0; i < nb; i++) {
-        int gw = (int)strlen(labels[i]) * 8 + 16;
+        int gw = font_text_width(tf, labels[i], (int)strlen(labels[i])) + 16;
         int x = nb == 1 ? (width - gw) / 2 : (i == nb - 1 ? width - 10 - gw : gx + i * step);
         uint32_t g = exec_allocmem(Gadget_SIZEOF, MEMF_PUBLIC | MEMF_CLEAR);
         uint32_t xy = exec_allocmem(40, MEMF_PUBLIC | MEMF_CLEAR), bd = exec_allocmem(Border_SIZEOF * 2, MEMF_PUBLIC | MEMF_CLEAR);
         /* raised border: shine top-left, shadow bottom-right */
-        int pts[10] = { 0, 13, 0, 0, gw - 1, 0, gw - 1, 13, 1, 13 };
+        int pts[10] = { 0, bh - 1, 0, 0, gw - 1, 0, gw - 1, bh - 1, 1, bh - 1 };
         for (int k = 0; k < 10; k++) wr16(xy + 2 * (uint32_t)k, (uint32_t)pts[k]);
         wr8(bd + Border_FrontPen, s->pens[SHINEPEN]);
         wr8(bd + Border_DrawMode, JAM1);
@@ -1169,7 +1196,7 @@ static uint32_t build_request(M68K *c, uint32_t refwin, const char *title, const
         wr16(g + Gadget_LeftEdge, (uint32_t)x);
         wr16(g + Gadget_LeftEdge + 2, (uint32_t)gy);
         wr16(g + Gadget_Width, (uint32_t)gw);
-        wr16(g + Gadget_Width + 2, 14);
+        wr16(g + Gadget_Width + 2, (uint32_t)bh);
         wr16(g + Gadget_Flags, GFLG_GADGHCOMP);
         wr16(g + Gadget_Activation, GACT_RELVERIFY);
         wr16(g + Gadget_GadgetType, GTYP_BOOLGADGET);

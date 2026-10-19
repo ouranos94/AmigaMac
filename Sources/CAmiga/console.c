@@ -24,6 +24,7 @@ struct Con {
     int own_window;                 /* opened by CON: (closed with it) */
     int refs;
     int cols, rows, cx, cy;
+    int fw, fh, base;               /* a cell: the system font's width and height, its baseline */
     uint8_t *ch, *at;               /* grid: character, pens (fg << 4 | bg) */
     int fg, bg, inverse, cursor_on, cursor_drawn;
     /* input */
@@ -61,8 +62,8 @@ static void origin(Con *k, int *x0, int *y0) {
 static void grid_size(Con *k, int *cols, int *rows) {
     int iw = (int16_t)rd16(k->win + Window_Width) - rd8(k->win + Window_BorderLeft) - rd8(k->win + Window_BorderRight) - 4;
     int ih = (int16_t)rd16(k->win + Window_Height) - rd8(k->win + Window_BorderTop) - rd8(k->win + Window_BorderBottom) - 2;
-    *cols = iw / 8 < 1 ? 1 : iw / 8 > 255 ? 255 : iw / 8;
-    *rows = ih / 8 < 1 ? 1 : ih / 8 > 200 ? 200 : ih / 8;
+    *cols = iw / k->fw < 1 ? 1 : iw / k->fw > 255 ? 255 : iw / k->fw;
+    *rows = ih / k->fh < 1 ? 1 : ih / k->fh > 200 ? 200 : ih / k->fh;
 }
 
 static void draw_cell(Con *k, int x, int y) {
@@ -76,7 +77,7 @@ static void draw_cell(Con *k, int x, int y) {
     wr8(rp + RastPort_FgPen, a >> 4);
     wr8(rp + RastPort_BgPen, a & 15);
     wr8(rp + RastPort_DrawMode, JAM2);
-    rp_move(rp, x0 + x * 8, y0 + y * 8 + 6);
+    rp_move(rp, x0 + x * k->fw, y0 + y * k->fh + k->base);
     rp_text(rp, &c, 1);
     wr8(rp + RastPort_FgPen, ofg);
     wr8(rp + RastPort_BgPen, obg);
@@ -93,7 +94,7 @@ static void cursor(Con *k, int show) {
     if (show && !k->cursor_on) return;
     int x0, y0, cx = k->cx < k->cols ? k->cx : k->cols - 1;
     origin(k, &x0, &y0);
-    rp_fill(rd32(k->win + Window_RPort), x0 + cx * 8, y0 + k->cy * 8, x0 + cx * 8 + 7, y0 + k->cy * 8 + 7, 0, 1);
+    rp_fill(rd32(k->win + Window_RPort), x0 + cx * k->fw, y0 + k->cy * k->fh, x0 + (cx + 1) * k->fw - 1, y0 + (k->cy + 1) * k->fh - 1, 0, 1);
     k->cursor_drawn = show;
     gfx_touch();
 }
@@ -118,14 +119,15 @@ static void scroll(Con *k, int top, int n) {
     origin(k, &x0, &y0);
     BM b;
     if (w && bm_load(w->bm, &b)) {
-        if (n > 0) bm_copy(&b, x0, y0 + (top + n) * 8, &b, x0, y0 + top * 8, k->cols * 8, (span - n) * 8, 0xC0, 0xFF);
+        int fw = k->fw, fh = k->fh;
+        if (n > 0) bm_copy(&b, x0, y0 + (top + n) * fh, &b, x0, y0 + top * fh, k->cols * fw, (span - n) * fh, 0xC0, 0xFF);
         else {
             /* overlapping downward copy: go through a temporary bitmap */
-            uint32_t tmp = gfx_alloc_bitmap(k->cols * 8, (span + n) * 8, b.depth, 0);
+            uint32_t tmp = gfx_alloc_bitmap(k->cols * fw, (span + n) * fh, b.depth, 0);
             BM t;
             bm_load(tmp, &t);
-            bm_copy(&b, x0, y0 + top * 8, &t, 0, 0, k->cols * 8, (span + n) * 8, 0xC0, 0xFF);
-            bm_copy(&t, 0, 0, &b, x0, y0 + (top - n) * 8, k->cols * 8, (span + n) * 8, 0xC0, 0xFF);
+            bm_copy(&b, x0, y0 + top * fh, &t, 0, 0, k->cols * fw, (span + n) * fh, 0xC0, 0xFF);
+            bm_copy(&t, 0, 0, &b, x0, y0 + (top - n) * fh, k->cols * fw, (span + n) * fh, 0xC0, 0xFF);
             gfx_free_bitmap(tmp);
         }
     }
@@ -516,6 +518,14 @@ static Con *con_attach(uint32_t win, int own) {
     k->bg = 0;
     k->cursor_on = 1;
     k->echo = 1;
+    /* its text: the system's default font (fixed width), as console.device does */
+    uint32_t tf = gfx_default_font();
+    rp_set_font(rd32(win + Window_RPort), tf);
+    k->fw = rd16(tf + TextFont_tf_XSize);
+    k->fh = rd16(tf + TextFont_tf_YSize);
+    k->base = rd16(tf + TextFont_tf_Baseline);
+    if (k->fw < 1) k->fw = 8;
+    if (k->fh < 1) k->fh = 8;
     NWindow *w = nwin_of(win);
     if (w) w->hook = win_hook;
     k->next = cons;

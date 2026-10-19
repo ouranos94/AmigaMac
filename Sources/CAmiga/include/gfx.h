@@ -68,5 +68,13 @@ void layers_init(void);
 void intuition_init(void);
 void gadtools_init(void);
 extern uint32_t GfxBase, LayersBase, IntuitionBase;
+int font_text_width(uint32_t tf, const char *s, int n);
+void bm_font_text(BM *b, int x, int ytop, const char *s, int pen, uint32_t tf);
+uint32_t gfx_topaz8(void);
+uint32_t font_workbench(void);                  /* the font preferences (fontprefs.c) */
+uint32_t font_system(void);
+uint32_t font_screen(void);
+uint32_t font_from_attr(uint32_t ta);           /* a TextAttr's font (diskfont too), 0 if none */
+void rp_set_font(uint32_t rp, uint32_t tf);
 
 #endif
