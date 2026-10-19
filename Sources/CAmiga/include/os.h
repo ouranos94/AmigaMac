@@ -44,6 +44,7 @@ int chip_display_size(int *w, int *h);
 int chip_display_render(uint32_t *dst, int w, int h);
 void chip_mouse_moved(int dx, int dy);
 int chip_pointer(int *x, int *y);
+int chip_pointer_now(int *x, int *y);
 int chip_screen_point(int cx, int cy, int *id, int *sx, int *sy);
 
 /* ---- 68k heap (native bookkeeping, Amiga addresses) --------------------- */

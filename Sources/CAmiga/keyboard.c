@@ -126,31 +126,53 @@ static uint32_t in_BeginIO(M68K *c) {
 /* PeekQualifier(): the qualifier keys and buttons held now */
 static uint32_t in_PeekQualifier(M68K *c) { (void)c; return (uint32_t)input_qualifier() & 0xFFFF; }
 
-/* on the display chips' picture, the program moves its own pointer (sprite 0)
-   by the mouse's counts, each in its own way: the counts sent bring the sprite
-   onto the Mac's pointer, with the gain the program showed (picture pixels per
-   count, a power of two from 1/4 to 8, kept here times 4) */
+/* On the display chips' picture the program moves its own pointer (sprite 0)
+   by the mouse's counts, each in its own way. While the Mac's mouse moves, its
+   moves go as counts, at the gain the program showed (picture pixels per
+   count, a power of two from 1/4 to 8, kept here times 4). Once the mouse and
+   the sprite have both stopped, the counts sent since the last stop and the
+   distance the sprite went give the gain, and one move brings the sprite onto
+   the Mac's pointer. While moving, the sprite lags behind the counts already
+   sent: comparing them then would count those moves twice. */
+static int gx = 8, gy = 4;                                      /* picture pixels per count, times 4 */
+static int rem_x, rem_y;                                        /* what did not make a whole count */
+static int acc_x, acc_y;                                        /* counts sent since the last stop */
+static int stop_x = -1, stop_y, last_px = -1, last_py;          /* the sprite at the last stop, at the last tick */
+static int target_x, target_y, still_ticks;                     /* the Mac's pointer; ticks since it moved */
+static int chip_target_known;
+
 static int snap_gain(int moved, int sent) {
-    int g = (4 * moved + sent / 2) / sent;                      /* times 4 */
+    int g = (4 * moved + sent / 2) / sent;
     return g >= 24 ? 32 : g >= 12 ? 16 : g >= 6 ? 8 : g >= 3 ? 4 : g >= 2 ? 2 : 1;
 }
-static void chip_mouse_delta(int x, int y, int *dx, int *dy) {
-    static int gx = 8, gy = 4, sent_x, sent_y, prev_x = -1, prev_y;
+
+/* a move of the Mac's pointer by (mx, my) picture pixels: the counts to send */
+static void chip_mouse_counts(int mx, int my, int *dx, int *dy) {
+    int nx = mx * 4 + rem_x, ny = my * 4 + rem_y;
+    *dx = nx / gx; rem_x = nx - *dx * gx;
+    *dy = ny / gy; rem_y = ny - *dy * gy;
+    acc_x += *dx; acc_y += *dy;
+}
+
+/* every input.device tick (ten a second): once all is still, the gain and the correction */
+static void chip_mouse_tick(void) {
+    if (!chip_target_known || !chip_active()) { last_px = -1; return; }
     int px, py;
-    if (chip_pointer(&px, &py)) {
-        if (prev_x >= 0) {
-            int mx = px - prev_x, my = py - prev_y;
-            if (abs(sent_x) >= 4 && mx && (mx > 0) == (sent_x > 0)) gx = snap_gain(mx, sent_x);
-            if (abs(sent_y) >= 4 && my && (my > 0) == (sent_y > 0)) gy = snap_gain(my, sent_y);
-        }
-        prev_x = px; prev_y = py;
-        *dx = (x - px) * 4 / gx;
-        *dy = (y - py) * 4 / gy;
-        sent_x = *dx; sent_y = *dy;
-    } else {                                                    /* no new frame yet: the Mac's move alone */
-        *dx = *dx * 4 / gx;
-        *dy = *dy * 4 / gy;
-        sent_x += *dx; sent_y += *dy;
+    if (!chip_pointer_now(&px, &py)) { last_px = -1; return; }
+    int settled = px == last_px && py == last_py;
+    last_px = px; last_py = py;
+    if (++still_ticks < 2 || !settled) return;
+    if (stop_x >= 0) {
+        if (abs(acc_x) >= 8 && px != stop_x && (px - stop_x > 0) == (acc_x > 0)) gx = snap_gain(px - stop_x, acc_x);
+        if (abs(acc_y) >= 8 && py != stop_y && (py - stop_y > 0) == (acc_y > 0)) gy = snap_gain(py - stop_y, acc_y);
+    }
+    stop_x = px; stop_y = py;
+    acc_x = acc_y = 0;
+    rem_x = rem_y = 0;
+    int ex = target_x - px, ey = target_y - py;
+    if (abs(ex) * 4 >= gx || abs(ey) * 4 >= gy) {               /* off by a count or more: a move to put it right */
+        InputEv e = { IEV_MOUSE, AMIGA_CHIP_SCREEN, target_x, target_y, 0, 0x20000, 0 };
+        amiga_input_event(&e);
     }
 }
 
@@ -161,9 +183,23 @@ extern int cx_filter(M68K *c, uint32_t ie);
 int input_handlers_filter(InputEv *ev) {
     if (ev->qual & 0x10000) { ev->qual &= 0xFFFF; return 1; }  /* put in by commodities: on to Intuition */
     int move_dx = 0, move_dy = 0;                               /* a move, as the mouse counts it */
+    if (ev->type == IEV_TICK) chip_mouse_tick();
     if (ev->type == IEV_MOUSE) {
         if (last_x >= 0) { move_dx = ev->x - last_x; move_dy = ev->y - last_y; }
-        if (ev->screen == AMIGA_CHIP_SCREEN) chip_mouse_delta(ev->x, ev->y, &move_dx, &move_dy);
+        if (ev->screen == AMIGA_CHIP_SCREEN) {
+            int px, py;
+            if (ev->qual & 0x20000) {                           /* the correction, once still */
+                ev->qual &= 0xFFFF;
+                if (chip_pointer_now(&px, &py)) { move_dx = ev->x - px; move_dy = ev->y - py; }
+                else move_dx = move_dy = 0;
+            } else still_ticks = 0;
+            if (!chip_target_known) {                           /* the first move: from where the sprite is */
+                chip_target_known = 1;
+                if (chip_pointer_now(&px, &py)) { move_dx = ev->x - px; move_dy = ev->y - py; }
+            }
+            target_x = ev->x; target_y = ev->y;
+            chip_mouse_counts(move_dx, move_dy, &move_dx, &move_dy);
+        }
         last_x = ev->x; last_y = ev->y;
         chip_mouse_moved(move_dx, move_dy);
     }

@@ -378,6 +378,14 @@ int chip_screen_point(int cx, int cy, int *id, int *sx, int *sy) {
     return 0;
 }
 
+/* the program's pointer (sprite 0) on the chips' picture, as last shown */
+int chip_pointer_now(int *x, int *y) {
+    if (!shown || !ptr_frame || ptr_frame + 2 < frames) return 0;
+    *x = ptr_x - ox;
+    *y = ptr_y - oy;
+    return 1;
+}
+
 /* the program's pointer (sprite 0) on the chips' picture, once per new frame */
 int chip_pointer(int *x, int *y) {
     if (!shown || !ptr_frame || ptr_frame == ptr_used || ptr_frame + 2 < frames) return 0;

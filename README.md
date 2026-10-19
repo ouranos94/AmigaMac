@@ -243,8 +243,9 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   (`SetIntVector`). Dès qu'un programme installe sa propre liste copper, son image
   s'affiche dans une fenêtre Mac à part ; elle se ferme quand il remet la liste du
   système (`GfxBase->copinit`) ou se termine. Le pointeur du Mac y est masqué : le
-  sprite du programme le remplace, et les mouvements envoyés le ramènent sous la
-  souris, au gain que le programme applique. Ce n'est pas exact au cycle près.
+  sprite du programme le remplace : les mouvements du Mac lui parviennent en relatif,
+  puis, une fois la souris et le sprite immobiles, le gain du programme est mesuré
+  et un dernier mouvement ramène le sprite sous la souris. Ce n'est pas exact au cycle près.
   `AMIGAMAC_HW=1` journalise les voies son qui démarrent.
 - **Fond et organisation** : le Workbench lit `ENV:Sys/wbpattern.prefs` (format
   WBPattern, image en mosaïque, centrée ou à l'échelle) et affiche l'image nommée
