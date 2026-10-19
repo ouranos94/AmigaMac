@@ -208,6 +208,15 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   comme sur AmigaOS. Un jeu d'icônes AmigaMac original est dessiné par
   `tools/mkicons.py` : tiroir, disque, Ram Disk, Mac, corbeille, outil, document, Shell,
   ScreenMode ; chaque fichier garde aussi une image classique 4 couleurs.
+- **GlowIcons et NewIcons** : les GlowIcons (format d'AmigaOS 3.5 ci-dessus) et les
+  NewIcons, plus anciennes, codées dans les types d'outil `IM1=`/`IM2=`, s'affichent en
+  couleur, avec leur image sélectionnée, comme avec l'icon.library d'OS 3.5.
+  `IconControlA` donne aux programmes les images, palettes, couleur transparente,
+  masques, dimensions et options (`ICONCTRLA_…`). Une icône modifiée par un programme
+  est réécrite au format OS 3.5 par `PutDiskObject`. Dans un tiroir, les icônes sans
+  position prennent les places que laissent libres les icônes placées. Le jeu de
+  GlowIcons d'AmigaOS n'est pas fourni (il n'est pas libre) ; celles des logiciels
+  installés s'affichent. Test : `GlowTest icône [copie]`.
 - **Couleurs vraies (comme une carte graphique)** : les modes « AmigaMac: » vont
   jusqu'à 24 bits (16 millions de couleurs), le Workbench y est par défaut. La
   bibliothèque graphique a un second type d'image, en couleurs vraies (32 bits par

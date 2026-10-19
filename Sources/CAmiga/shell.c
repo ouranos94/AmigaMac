@@ -953,6 +953,15 @@ static int c_break(int argc, char argv[][512], const char *rest) {
 
 static int c_help(int argc, char argv[][512], const char *rest);
 
+/* WBOPEN name: the Workbench opens it, a drawer in its window (testing aid) */
+static int c_wbopen(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    extern int wb_open_object(const char *name);
+    if (argc < 2) { out("WBOPEN: required argument missing\n"); return 20; }
+    if (!wb_open_object(argv[1])) { out("WBOPEN: le Workbench ne tourne pas\n"); return 20; }
+    return 0;
+}
+
 /* PEEK address [bytes]: memory in hexadecimal (testing aid) */
 static int c_peek(int argc, char argv[][512], const char *rest) {
     (void)rest;
@@ -1028,6 +1037,7 @@ static const struct { const char *name; Builtin fn; const char *help; } builtins
     { "STATUS", c_status, "liste les processus et tâches" },
     { "BREAK", c_break, "envoie Ctrl-C/D/E/F à un processus" },
     { "WAIT", c_wait, "attend n secondes" },
+    { "WBOPEN", c_wbopen, "ouvre un tiroir dans le Workbench (tests)" },
     { "PEEK", c_peek, "mémoire en hexadécimal (tests)" },
     { "SNAPSHOT", c_snapshot, "image de l'écran actif (tests)" },
     { "INPUT", c_input, "injecte souris/clavier (tests)" },

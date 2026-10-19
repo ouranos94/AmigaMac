@@ -344,6 +344,17 @@ static void icon_bounds(WIcon *ic, int *x0, int *y0, int *x1, int *y1) {
     *y1 = ic->y + ic->h + 10;
 }
 
+/* a place for an icon (box bw x h, label under it) that a positioned icon already takes */
+static int spot_taken(WBWin *w, int x, int y, int bw, int h) {
+    for (WIcon *o = w->icons; o; o = o->next) {
+        if (!o->fixed) continue;
+        int x0, y0, x1, y1;
+        icon_bounds(o, &x0, &y0, &x1, &y1);
+        if (x < x1 + 6 && x + bw + 6 > x0 && y < y1 + 6 && y + h + 12 > y0) return 1;
+    }
+    return 0;
+}
+
 static void layout(WBWin *w) {
     int bl, bt, iw, ih;
     inner(w, &bl, &bt, &iw, &ih);
@@ -353,26 +364,30 @@ static void layout(WBWin *w) {
         w->cw = iw;
         w->ch = y + 2;
     } else {
-        /* auto-placed icons flow in rows, each row bottom-aligned */
-        int x = 8, y = 4;
+        /* icons without a position flow in rows, each row bottom-aligned, into
+           the places the positioned ones leave free */
+        int x = 8, y = 4, rowh = 0, nrow = 0;
         WIcon *row[256];
-        int nrow = 0, rowh = 0;
-        for (WIcon *ic = w->icons;; ic = ic->next) {
-            int cell = ic ? (ic->w > ic->lw ? ic->w : ic->lw) + 14 : 0;
-            if (!ic || (nrow && x + cell > iw - 4) || nrow == 256) {
-                for (int k = 0; k < nrow; k++) row[k]->y = y + (rowh - row[k]->h);
-                y += rowh + 16;
-                x = 8; nrow = 0; rowh = 0;
-                if (!ic) break;
-            }
+#define END_ROW() do { \
+            for (int k_ = 0; k_ < nrow; k_++) row[k_]->y = y + (rowh - row[k_]->h); \
+            y += rowh ? rowh + 16 : 8; \
+            x = 8; nrow = 0; rowh = 0; \
+        } while (0)
+        for (WIcon *ic = w->icons; ic; ic = ic->next) {
             if (ic->fixed) continue;
-            int bw = ic->w > ic->lw ? ic->w : ic->lw;
+            int bw = ic->w > ic->lw ? ic->w : ic->lw, cell = bw + 14;
+            for (int guard = 0; guard < 100000; guard++) {
+                if (nrow == 256 || (x > 8 && x + cell > iw - 4)) { END_ROW(); continue; }
+                if (!spot_taken(w, x, y, bw, ic->h > rowh ? ic->h : rowh)) break;
+                x += 8;
+            }
             ic->x = x + (bw - ic->w) / 2;
-            if (ic->lw > ic->w) ic->x = x + (ic->lw - ic->w) / 2;
             x += cell;
             if (ic->h > rowh) rowh = ic->h;
             row[nrow++] = ic;
         }
+        END_ROW();
+#undef END_ROW
         int maxx = 0, maxy = 0;
         for (WIcon *ic = w->icons; ic; ic = ic->next) {
             int x0, y0, x1, y1;
@@ -1937,6 +1952,13 @@ static void name_of_lock(uint32_t lock, uint32_t name, char *out, int max) {
     if (hp) dos_amiga_name(hp, dir, sizeof dir);
     if (name) str_get(name, n, sizeof n);
     join_path(out, max, dir, n);
+}
+
+/* the Shell's WBOPEN: as OpenWorkbenchObject() */
+int wb_open_object(const char *name) {
+    if (!wb.running) return 0;
+    queue(REQ_OPEN, name);
+    return 1;
 }
 
 static uint32_t wbl_OpenWorkbenchObjectA(M68K *c) {
