@@ -105,6 +105,7 @@ final class ScreenView: NSView {
         layer?.contentsGravity = .resize
         timer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in self?.refresh() }
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+        registerForDraggedTypes([.fileURL])                 // a disk image dropped in: into a drive
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -189,6 +190,19 @@ final class ScreenView: NSView {
         amiga_input_event(&ev)
     }
     override func keyDown(with e: NSEvent) { key(e, up: false) }
+
+    // MARK: disk images dropped on the screen
+
+    private func adfs(_ info: NSDraggingInfo) -> [String] {
+        let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.map(\.path).filter { $0.lowercased().hasSuffix(".adf") }
+    }
+    override func draggingEntered(_ info: NSDraggingInfo) -> NSDragOperation { adfs(info).isEmpty ? [] : .copy }
+    override func performDragOperation(_ info: NSDraggingInfo) -> Bool {
+        let files = adfs(info)
+        files.forEach { AppDelegate.insert($0) }
+        return !files.isEmpty
+    }
     override func keyUp(with e: NSEvent) { key(e, up: true) }
     override func flagsChanged(with e: NSEvent) {
         let f = e.modifierFlags

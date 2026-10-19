@@ -624,9 +624,9 @@ void icon_draw(uint32_t rp, uint32_t dobj, const char *label, int x, int y, int 
     icon_size(dobj, &w, &h);
     ColorIcon *ci = colour_of(dobj);
     if (ci && draw_colour(rp, ci, x, y, selected)) ;
-    else if (selected && sel && hl == 2) draw_image(rp, sel, x, y, 1);
+    else if (selected && sel && hl == 2) draw_image_ex(rp, sel, x, y, 1, 1);
     else if (img) {
-        draw_image(rp, img, x, y, 0);
+        draw_image_ex(rp, img, x, y, 0, 1);                     /* pen 0: the background shows through */
         if (selected) {
             BM b;
             if (bm_load(rd32(rp + RastPort_BitMap), &b)) bm_fill(&b, x, y, x + w - 1, y + h - 1, 0, COMPLEMENT, 3);

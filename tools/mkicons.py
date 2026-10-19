@@ -185,6 +185,26 @@ def harddisk(label_colour=rgb(0x5A80E0)):
     c.shadow()
     return c
 
+def floppy():
+    c = Canvas(40, 38)
+    body0, body1 = rgb(0x4A5878), rgb(0x2A3450)
+    c.poly([(3, 2), (32, 2), (37, 7), (37, 34), (3, 34)], body0)             # the case, one corner cut
+    c.vgrad(4, 3, 36, 33, body0, body1)
+    c.line(3, 2, 32, 2, OUT); c.line(32, 2, 37, 7, OUT); c.line(37, 7, 37, 34, OUT)
+    c.line(3, 34, 37, 34, OUT); c.line(3, 2, 3, 34, OUT)
+    c.rect(4, 3, 31, 3, rgb(0x7888A8))
+    c.vgrad(11, 3, 28, 13, rgb(0xE4E8EE), rgb(0x9CA4B0))                     # the metal shutter
+    c.frame(11, 3, 28, 13, OUT)
+    c.rect(22, 5, 25, 11, rgb(0x2A3040))                                      # its window
+    c.vgrad(7, 18, 33, 33, rgb(0xFAFAF6), rgb(0xDCDAD2))                     # the label
+    c.frame(7, 18, 33, 33, rgb(0x6A7080))
+    for y in (22, 25, 28):
+        c.rect(10, y, 30, y, rgb(0x9AA6C8))                                   # lines on it
+    c.rect(10, 19, 30, 19, rgb(0xE05A40))
+    c.rect(5, 30, 6, 32, rgb(0x161A24))                                       # write-protect hole
+    c.shadow()
+    return c
+
 def ramdisk():
     c = Canvas(48, 30)
     c.vgrad(2, 4, 44, 22, rgb(0x3CA854), rgb(0x1E6E34))                      # the board
@@ -390,6 +410,7 @@ if __name__ == '__main__':
     write_info(os.path.join(ENVARC, 'def_drawer.info'), drawer(), WBDRAWER, drawer=True)
     write_info(os.path.join(ENVARC, 'def_disk.info'), harddisk(), WBDISK, drawer=True)
     write_info(os.path.join(ENVARC, 'def_RAM.info'), ramdisk(), WBDISK, drawer=True)
+    write_info(os.path.join(ENVARC, 'def_floppy.info'), floppy(), WBDISK, drawer=True)
     write_info(os.path.join(ENVARC, 'def_Mac.info'), macvolume(), WBDISK, drawer=True)
     write_info(os.path.join(ENVARC, 'def_trashcan.info'), trashcan(), WBGARBAGE, drawer=True)
     write_info(os.path.join(ENVARC, 'def_tool.info'), tool(), WBTOOL)

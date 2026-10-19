@@ -242,7 +242,7 @@ static void read_drawer(AslReq *a, EntList *l, const char *drawer, const char *p
         DIR *d = dos_resolve(drawer, hp, sizeof hp) ? opendir(hp) : 0;
         struct dirent *e;
         while (d && (e = readdir(d))) {
-            if (e->d_name[0] == '.') continue;
+            if (dos_hidden_name(e->d_name)) continue;
             char full[2600];
             struct stat st;
             snprintf(full, sizeof full, "%s/%s", hp, e->d_name);

@@ -33,8 +33,10 @@ void draw_border(uint32_t rp, uint32_t b, int left, int top) {
     }
 }
 
-void draw_image(uint32_t rp, uint32_t img, int left, int top, int state) {
-    (void)state;
+void draw_image(uint32_t rp, uint32_t img, int left, int top, int state) { draw_image_ex(rp, img, left, top, state, 0); }
+
+/* clear0: pen 0 left out, as icon.library draws the old icons from AmigaOS 3.5 on */
+void draw_image_ex(uint32_t rp, uint32_t img, int left, int top, int state, int clear0) {
     BM b;
     if (!bm_load(rd32(rp + RastPort_BitMap), &b)) return;
     for (; img; img = rd32(img + Image_NextImage)) {
@@ -60,7 +62,7 @@ void draw_image(uint32_t rp, uint32_t img, int left, int top, int state) {
                         k++;
                     } else if (onoff & (1 << p)) pen |= 1 << p;
                 }
-                bm_pixel(&b, x0 + x, y0 + y, pen, JAM1, 0xFF);
+                if (pen || !clear0) bm_pixel(&b, x0 + x, y0 + y, pen, JAM1, 0xFF);
             }
     }
     gfx_touch();
@@ -910,6 +912,14 @@ static void dispatch(InputEv *ev) {
         for (NWindow *w = s->wins; w; w = w->next) send_idcmp(w, IDCMP_CLOSEWINDOW, 0, 0, 0, 0, 0);
 }
 
+/* a disk went in or out: the windows that asked (IDCMP_DISKINSERTED, IDCMP_DISKREMOVED) hear it */
+void intuition_disk_event(int inserted) {
+    uint32_t cls = inserted ? 0x8000 : 0x10000;
+    for (NScreen *s = screens; s; s = s->next)
+        for (NWindow *w = s->wins; w; w = w->next)
+            if (rd32(w->win + Window_IDCMPFlags) & cls) send_idcmp(w, cls, 0, (uint32_t)qualifier, 0, 0, 0);
+}
+
 static int cur_screen;
 /* events a commodity puts in the stream, in place of the one it took (input task only) */
 void input_dispatch_now(InputEv *ev) {
@@ -926,6 +936,11 @@ void input_task_main(void *arg) {
         uint32_t m;
         while ((m = list_remhead(ireply_port + MP_MSGLIST))) exec_freemem(m, 56);   /* replied IntuiMessages */
         extern int input_handlers_filter(InputEv *ev);
+        if (ev.type == IEV_DISK) {                              /* a disk in or out of a drive */
+            extern void adf_input_event(const InputEv *e);
+            adf_input_event(&ev);
+            continue;
+        }
         if (ev.screen) cur_screen = ev.screen;
         if (ev.type == IEV_MOUSE) { last_mx = ev.x; last_my = ev.y; }
         if (!input_handlers_filter(&ev)) continue;              /* a program's input handler ate it */

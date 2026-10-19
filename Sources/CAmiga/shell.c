@@ -194,7 +194,7 @@ static int list_dir(const char *apath_in, Entry **res) {
     Entry *e = malloc(sizeof *e * cap);
     struct dirent *de;
     while ((de = readdir(d))) {
-        if (de->d_name[0] == '.') continue;
+        if (dos_hidden_name(de->d_name)) continue;
         if (pat[0]) {
             char l1[256];
             dos_name_to_amiga(de->d_name, l1, sizeof l1);
@@ -953,6 +953,26 @@ static int c_break(int argc, char argv[][512], const char *rest) {
 
 static int c_help(int argc, char argv[][512], const char *rest);
 
+/* DISKIMAGE DFn: file.adf | DISKIMAGE DFn: EJECT : a disk image in a drive, or out */
+static int c_diskimage(int argc, char argv[][512], const char *rest) {
+    (void)rest;
+    if (argc < 3 || strncasecmp(argv[1], "DF", 2) || argv[1][2] < '0' || argv[1][2] > '3') {
+        out("DISKIMAGE DF0:-DF3: fichier.adf | EJECT\n");
+        return 20;
+    }
+    int unit = argv[1][2] - '0';
+    char msg[1200], hp[2048];
+    if (!strcasecmp(argv[2], "EJECT")) {
+        int ok = adf_eject(unit, msg, sizeof msg);
+        out(msg); out("\n");
+        return ok ? 0 : 20;
+    }
+    if (!dos_resolve(argv[2], hp, sizeof hp)) { out("DISKIMAGE: fichier introuvable\n"); return 20; }
+    int ok = adf_insert(unit, hp, msg, sizeof msg);
+    out(msg); out("\n");
+    return ok ? 0 : 20;
+}
+
 /* WBOPEN name: the Workbench opens it, a drawer in its window (testing aid) */
 static int c_wbopen(int argc, char argv[][512], const char *rest) {
     (void)rest;
@@ -1037,6 +1057,7 @@ static const struct { const char *name; Builtin fn; const char *help; } builtins
     { "STATUS", c_status, "liste les processus et tâches" },
     { "BREAK", c_break, "envoie Ctrl-C/D/E/F à un processus" },
     { "WAIT", c_wait, "attend n secondes" },
+    { "DISKIMAGE", c_diskimage, "met une image de disquette (.adf) dans DF0:-DF3:, ou l'éjecte" },
     { "WBOPEN", c_wbopen, "ouvre un tiroir dans le Workbench (tests)" },
     { "PEEK", c_peek, "mémoire en hexadécimal (tests)" },
     { "SNAPSHOT", c_snapshot, "image de l'écran actif (tests)" },

@@ -158,6 +158,7 @@ void gadget_box(NWindow *w, uint32_t g, int *x, int *y, int *gw, int *gh);
 void draw_itext(uint32_t rp, uint32_t it, int left, int top);
 void draw_border(uint32_t rp, uint32_t border, int left, int top);
 void draw_image(uint32_t rp, uint32_t img, int left, int top, int state);
+void draw_image_ex(uint32_t rp, uint32_t img, int left, int top, int state, int clear0);
 int itext_length(uint32_t it);
 extern const NativeEntry intui_input_natives[];
 

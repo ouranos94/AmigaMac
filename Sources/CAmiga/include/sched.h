@@ -60,7 +60,7 @@ void sched_timer_add(uint64_t when_us, int kind, uint32_t a, uint32_t b);
 int sched_timer_remove(int kind, uint32_t a);
 
 /* input events (mouse, keys, ticks) from the host, any thread */
-enum { IEV_MOUSE = 1, IEV_BUTTON, IEV_KEY, IEV_TICK, IEV_CLOSE_SCREEN };
+enum { IEV_MOUSE = 1, IEV_BUTTON, IEV_KEY, IEV_TICK, IEV_CLOSE_SCREEN, IEV_DISK };   /* IEV_DISK: code = unit, x = 1 in, 0 out */
 typedef struct {
     int type, screen;           /* screen: host id of the screen window */
     int x, y;                   /* screen pixels */

@@ -208,6 +208,20 @@ Pas encore fait : `GIMMEZEROZERO`, couches créées par les programmes, polices 
   comme sur AmigaOS. Un jeu d'icônes AmigaMac original est dessiné par
   `tools/mkicons.py` : tiroir, disque, Ram Disk, Mac, corbeille, outil, document, Shell,
   ScreenMode ; chaque fichier garde aussi une image classique 4 couleurs.
+- **Disquettes (.adf)** : une image de disquette Amiga (880 Ko, ou 1,76 Mo pour une
+  haute densité) se met dans DF0: à DF3: par le menu Disquettes du Mac (⌘D insérer,
+  ⌘E éjecter), en la glissant sur l'écran Amiga, en l'ouvrant depuis le Finder, ou par
+  `DISKIMAGE DF0: fichier.adf` (`DISKIMAGE DF0: EJECT`). Le système de fichiers
+  d'AmigaDOS y est lu (OFS et FFS, noms internationaux, caches de répertoires) : son
+  contenu, avec dates, bits de protection et commentaires, devient le volume DF0: et le
+  volume au nom de la disquette, visibles du Workbench (icône de disquette, place
+  occupée sur la disquette), de `Info()`, de la DosList ; les fenêtres qui le demandent
+  reçoivent IDCMP_DISKINSERTED/REMOVED. À l'éjection, et quand AmigaMac se termine,
+  une disquette modifiée est réécrite dans son image (même bloc d'amorce, même système
+  de fichiers ; les caches de répertoires ne sont pas recréés). Si son contenu ne tient
+  plus sur une disquette, l'image n'est pas touchée et le journal dit où il est gardé.
+  Les disquettes non AmigaDOS (jeux à chargeur de pistes) ne se lisent pas : rien ne
+  reproduit le lecteur de disquettes lui-même.
 - **GlowIcons et NewIcons** : les GlowIcons (format d'AmigaOS 3.5 ci-dessus) et les
   NewIcons, plus anciennes, codées dans les types d'outil `IM1=`/`IM2=`, s'affichent en
   couleur, avec leur image sélectionnée, comme avec l'icon.library d'OS 3.5.

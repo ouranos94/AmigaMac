@@ -23,6 +23,12 @@
 uint32_t DOSBase;
 static int next_tasknum = 1;
 
+/* names the Amiga does not see: ".", "..", the Mac's hidden files (and the RAM disk's
+   folder); the few Amiga files whose name starts with a dot stay */
+int dos_hidden_name(const char *n) {
+    return n[0] == '.' && strcmp(n, ".info") && strcmp(n, ".fastdir") && strcmp(n, ".backdrop");
+}
+
 /* ---- assigns ------------------------------------------------------------ */
 
 typedef struct { char name[32]; char path[1024]; } Assign;
@@ -39,6 +45,15 @@ static void assign_set(const char *name, const char *path) {
     snprintf(assigns[nassigns].name, sizeof assigns[nassigns].name, "%s", name);
     snprintf(assigns[nassigns].path, sizeof assigns[nassigns].path, "%s", path);
     nassigns++;
+}
+
+/* volumes mounted from disk images: their device and their name */
+typedef struct { char device[8], volume[64], path[1024]; } Mount;
+static Mount mounts[4];
+
+static void assign_del(const char *name) {
+    for (int i = 0; i < nassigns; i++)
+        if (!strcasecmp(assigns[i].name, name)) { assigns[i] = assigns[--nassigns]; dol_dirty = 1; return; }
 }
 
 static const char *assign_get(const char *name) {
@@ -259,6 +274,13 @@ static void amiga_name(const char *hpath, char *out, int max) {
         if (p && !strncmp(hpath, p, l) && (hpath[l] == 0 || hpath[l] == '/') && l > bestlen) {
             for (int i = 0; i < nassigns; i++) if (!strcasecmp(assigns[i].name, prefer[k])) best = i;
             bestlen = l;
+        }
+    }
+    for (int i = 0; i < 4; i++) {                               /* a disk: its name */
+        size_t l = strlen(mounts[i].path);
+        if (mounts[i].device[0] && !strncmp(hpath, mounts[i].path, l) && (hpath[l] == 0 || hpath[l] == '/')) {
+            snprintf(out, max, "%s:%s", mounts[i].volume, hpath[l] ? hpath + l + 1 : "");
+            return;
         }
     }
     if (best < 0) { snprintf(out, max, "Mac:%s", hpath + 1); return; }
@@ -663,7 +685,7 @@ static uint32_t f_ExNext(M68K *c) {
     }
     struct dirent *e;
     while ((e = readdir(s->d))) {
-        if (e->d_name[0] == '.') continue;               /* ., .., hidden host files */
+        if (dos_hidden_name(e->d_name)) continue;       /* ., .., the Mac's hidden files */
         char hp[2048];
         snprintf(hp, sizeof hp, "%s/%s", p, e->d_name);
         if (fill_fib(hp, e->d_name, c->d[2])) return DOSTRUE;
@@ -733,6 +755,16 @@ static uint32_t f_Info(M68K *c) {
     wr32(id + 16, 1 << 20);
     wr32(id + 20, 512);
     wr32(id + 24, 0x444F5301);                           /* 'DOS\1' */
+    extern int adf_unit_of_path(const char *hp);
+    extern int adf_unit_info(int unit, char *label, int max, int *used, int *total);
+    const char *hp = c->d[1] ? lock_path(c->d[1]) : 0;
+    int unit = hp ? adf_unit_of_path(hp) : -1, used, total;
+    if (unit >= 0 && adf_unit_info(unit, 0, 0, &used, &total)) {   /* a disk in a drive: its own blocks */
+        wr32(id + 4, (uint32_t)unit);
+        wr32(id + 12, (uint32_t)total);
+        wr32(id + 16, (uint32_t)used);
+        wr32(id + 24, 0x444F5300);                       /* 'DOS\0' */
+    }
     return DOSTRUE;
 }
 
@@ -1511,7 +1543,7 @@ static uint32_t f_MatchFirst(M68K *c) {
         DIR *d = opendir(m->hdir);
         struct dirent *e;
         while (d && (e = readdir(d))) {
-            if (e->d_name[0] == '.') continue;
+            if (dos_hidden_name(e->d_name)) continue;
             char l1[256];
             name_to_amiga(e->d_name, l1, sizeof l1);
             if (!dos_match_pattern(last, l1, 1)) continue;
@@ -1890,7 +1922,7 @@ static uint32_t f_ExAll(M68K *c) {
     struct dirent *e;
     int more = 0;
     while ((e = readdir(d))) {
-        if (e->d_name[0] == '.') continue;
+        if (dos_hidden_name(e->d_name)) continue;
         if (idx++ < key) continue;
         char hp[2048];
         snprintf(hp, sizeof hp, "%s/%s", p, e->d_name);
@@ -2338,6 +2370,12 @@ static uint32_t make_dol(const char *name, int type, const char *path) {
     return d;
 }
 
+static int is_mount_name(const char *n) {
+    for (int i = 0; i < 4; i++)
+        if (mounts[i].device[0] && (!strcasecmp(n, mounts[i].device) || !strcasecmp(n, mounts[i].volume))) return 1;
+    return 0;
+}
+
 static void dol_rebuild(void) {
     dol_dirty = 0;
     for (int i = 0; i < ndol; i++) {
@@ -2351,11 +2389,16 @@ static void dol_rebuild(void) {
     dol_entries[ndol++] = make_dol("Mac", DLT_VOLUME, "/");
     dol_entries[ndol++] = make_dol("Ram Disk", DLT_VOLUME, ram_dir);
     dol_entries[ndol++] = make_dol("System", DLT_VOLUME, sys_dir);
+    for (int i = 0; i < 4; i++)
+        if (mounts[i].device[0]) {
+            dol_entries[ndol++] = make_dol(mounts[i].device, DLT_DEVICE, 0);
+            dol_entries[ndol++] = make_dol(mounts[i].volume, DLT_VOLUME, mounts[i].path);
+        }
     /* in alphabetical order: programs that sort the list themselves (Directory
        Opus 4 swaps only one byte per exchange) then find nothing to move */
     int order[64], n = 0;
     for (int i = 0; i < nassigns; i++)
-        if (strcasecmp(assigns[i].name, "RAM") && strcasecmp(assigns[i].name, "Mac") && strcasecmp(assigns[i].name, "DH0")) order[n++] = i;
+        if (strcasecmp(assigns[i].name, "RAM") && strcasecmp(assigns[i].name, "Mac") && strcasecmp(assigns[i].name, "DH0") && !is_mount_name(assigns[i].name)) order[n++] = i;
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0 && strcasecmp(assigns[order[j - 1]].name, assigns[order[j]].name) > 0; j--) {
             int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
@@ -2855,6 +2898,29 @@ int dos_read_line(uint32_t bfh, char *buf, int max) {
 }
 const char *dos_assign_path(const char *name) { return assign_get(name); }
 void dos_assign(const char *name, const char *path) { assign_set(name, path); if (DOSBase) dol_rebuild(); }
+
+/* a disk image's contents as the device (DF0) and the volume (the disk's name) */
+void dos_mount(const char *device, const char *volume, const char *path) {
+    int k = 0;
+    while (k < 4 && mounts[k].device[0] && strcasecmp(mounts[k].device, device)) k++;
+    if (k == 4) return;
+    snprintf(mounts[k].device, sizeof mounts[k].device, "%s", device);
+    snprintf(mounts[k].volume, sizeof mounts[k].volume, "%s", volume);
+    snprintf(mounts[k].path, sizeof mounts[k].path, "%s", path);
+    assign_set(device, path);
+    assign_set(volume, path);
+    dol_dirty = 1;
+}
+void dos_unmount(const char *device, const char *volume) {
+    for (int k = 0; k < 4; k++)
+        if (!strcasecmp(mounts[k].device, device)) memset(&mounts[k], 0, sizeof mounts[k]);
+    assign_del(device);
+    assign_del(volume);
+    dol_dirty = 1;
+}
+const char *dos_system_dir(void) { return sys_dir; }
+void dos_name_latin1(const char *host, char *out, int max) { name_to_amiga(host, out, max); }
+void dos_name_host(const char *latin1, char *out, int max) { name_to_host(latin1, out, max); }
 int dos_assign_count(void) { return nassigns; }
 const char *dos_assign_name(int i) { return assigns[i].name; }
 const char *dos_assign_target(int i) { return assigns[i].path; }

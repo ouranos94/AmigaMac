@@ -31,6 +31,17 @@ void os_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 int amiga_display_size(int id, int *w, int *h, int *hires, int *lace);
 int amiga_display_render(int id, uint32_t *rgba, int w, int h);   /* 0xFFRRGGBB */
 uint32_t amiga_display_serial(void);                              /* changes when anything is drawn */
+/* ---- disk images in DF0:-DF3: (adf.c), for the host (any thread) ------------- */
+void amiga_disk_insert(int unit, const char *adf_path);
+void amiga_disk_eject(int unit);
+int amiga_disk_present(int unit);
+void amiga_disk_flush_all(void);                /* changed disks back to their images (quitting) */
+int adf_insert(int unit, const char *file, char *msg, int max);
+int dos_hidden_name(const char *host_name);    /* a name the Amiga does not see */
+int adf_eject(int unit, char *msg, int max);
+int adf_unit_in(int unit);
+int adf_unit_info(int unit, char *label, int max, int *used, int *total);
+
 /* the display chips' picture (chipset.c), shown while a program drives the copper itself */
 #define AMIGA_CHIP_SCREEN 0x4000
 void chip_init(void);

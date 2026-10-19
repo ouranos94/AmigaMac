@@ -23,6 +23,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>Disquette Amiga</string>
+    <key>CFBundleTypeExtensions</key><array><string>adf</string><string>ADF</string></array>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+  </dict></array>
 </dict></plist>
 PLIST
 codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true

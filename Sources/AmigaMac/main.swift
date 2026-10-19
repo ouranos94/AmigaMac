@@ -3,6 +3,7 @@
 // the Amiga system runs on. The OS itself is in the CAmiga module.
 import AppKit
 import CAmiga
+import UniformTypeIdentifiers
 
 // MARK: - Console bridge (C callbacks -> Swift)
 
@@ -225,6 +226,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func newShell(_ sender: Any?) { Console.shared.submit("NEWSHELL") }
 
+    // MARK: disk images (.adf) in the drives
+
+    @objc func insertDisk(_ sender: NSMenuItem) {
+        let panel = NSOpenPanel()
+        panel.title = "Insérer une disquette dans DF\(sender.tag):"
+        panel.allowedContentTypes = [UTType(filenameExtension: "adf") ?? .data]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url { AppDelegate.insert(url.path, unit: sender.tag) }
+    }
+    @objc func ejectDisk(_ sender: NSMenuItem) { amiga_disk_eject(Int32(sender.tag)) }
+
+    /// into the given drive, or the first empty one
+    static func insert(_ path: String, unit: Int? = nil) {
+        let free = (0..<4).first { amiga_disk_present(Int32($0)) == 0 } ?? 0
+        let u = unit ?? free
+        amiga_disk_insert(Int32(u), path)
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        for f in filenames where f.lowercased().hasSuffix(".adf") { AppDelegate.insert(f) }
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    func applicationWillTerminate(_ note: Notification) {
+        amiga_disk_flush_all()                              // changed disks back into their images
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(ejectDisk(_:)) { return amiga_disk_present(Int32(item.tag)) != 0 }
+        return true
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
 
     func startAmiga() {
@@ -276,6 +309,17 @@ func buildMenu() -> NSMenu {
     edit.addItem(withTitle: "Coller", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     edit.addItem(withTitle: "Tout sélectionner", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editItem.submenu = edit
+    let diskItem = NSMenuItem()
+    main.addItem(diskItem)
+    let disks = NSMenu(title: "Disquettes")
+    for u in 0..<2 {
+        let ins = disks.addItem(withTitle: "Insérer dans DF\(u):…", action: #selector(AppDelegate.insertDisk(_:)), keyEquivalent: u == 0 ? "d" : "")
+        ins.tag = u
+        let ej = disks.addItem(withTitle: "Éjecter DF\(u):", action: #selector(AppDelegate.ejectDisk(_:)), keyEquivalent: u == 0 ? "e" : "")
+        ej.tag = u
+        if u == 0 { disks.addItem(NSMenuItem.separator()) }
+    }
+    diskItem.submenu = disks
     let winItem = NSMenuItem()
     main.addItem(winItem)
     let win = NSMenu(title: "Fenêtre")

@@ -138,6 +138,11 @@ static const char *volume_label(const char *vol) {
     if (!strcasecmp(vol, "SYS:")) return "System";
     if (!strcasecmp(vol, "RAM:")) return "Ram Disk";
     if (!strcasecmp(vol, "Mac:")) return "Mac";
+    if (!strncasecmp(vol, "DF", 2) && vol[2] >= '0' && vol[2] <= '3' && vol[3] == ':') {   /* a disk: its name */
+        static char label[4][300];
+        int u = vol[2] - '0';
+        if (adf_unit_info(u, label[u], sizeof label[u], 0, 0)) return label[u];
+    }
     return vol;
 }
 
@@ -274,6 +279,17 @@ static void read_desktop(WBWin *w) {
         if (!d) d = icon_default(WBDISK);
         WIcon *ic = add_icon(w, vols[i], vols[i], volume_label(vols[i]), d, WBDISK);
         if (!ic->fixed) { ic->x = 40 - ic->w / 2; ic->y = y; ic->fixed = 1; }
+        y += ic->h + 22;
+    }
+    for (int u = 0; u < 4; u++) {                               /* the disks in the drives */
+        if (!adf_unit_in(u)) continue;
+        char dev[8];
+        snprintf(dev, sizeof dev, "DF%d:", u);
+        uint32_t d = icon_get(dev);
+        if (!d) d = icon_env_default("floppy");                 /* the disk has none of its own */
+        if (!d) d = icon_default(WBDISK);
+        WIcon *ic = add_icon(w, dev, dev, volume_label(dev), d, WBDISK);
+        ic->x = 40 - ic->w / 2; ic->y = y; ic->fixed = 1;      /* in the column: its place on another Amiga means nothing here */
         y += ic->h + 22;
     }
     for (AppObj *a = wb.apps; a; a = a->next) {
@@ -1642,6 +1658,8 @@ static void reset_screen(void) {
 }
 
 void workbench_reset_screen(void) { queue(REQ_RESET, 0); }
+/* a disk went in or out: the desktop again, the disk's windows closed */
+void workbench_disks_changed(void) { if (wb.running) queue(REQ_APPCHANGED, 0); }
 
 static void handle_requests(void) {
     while (wb.reqs) {
@@ -1677,6 +1695,11 @@ static void handle_requests(void) {
         }
         case REQ_RESET: reset_screen(); break;
         case REQ_APPCHANGED:
+            for (WBWin *w = wb.wins, *n; w; w = n) {           /* windows of disks no longer in */
+                n = w->next;
+                if (!strncasecmp(w->path, "DF", 2) && w->path[2] >= '0' && w->path[2] <= '3' && w->path[3] == ':' && !adf_unit_in(w->path[2] - '0'))
+                    detach_close(w);
+            }
             rebuild_menus();
             for (WBWin *w = wb.wins; w; w = w->next) if (w->backdrop) { read_drawer(w); relayout(w); }
             break;
@@ -1737,7 +1760,13 @@ static void update_volume_title(WBWin *w) {
     if (w->backdrop || !l || w->path[l - 1] != ':') return;
     char hp[2048], title[256], fr[32], us[32];
     if (!host_of(w->path, hp, sizeof hp)) return;
-    if (!strcasecmp(w->path, "RAM:")) {                         /* the RAM disk: what it holds */
+    if (!strncasecmp(w->path, "DF", 2) && w->path[2] >= '0' && w->path[2] <= '3' && w->path[3] == ':') {   /* a disk */
+        int used, total;
+        if (!adf_unit_info(w->path[2] - '0', 0, 0, &used, &total)) return;
+        size_text(fr, sizeof fr, (double)(total - used) * 512);
+        size_text(us, sizeof us, (double)used * 512);
+        snprintf(title, sizeof title, "%s   %d %% plein, %s libres, %s utilis\xe9s", volume_label(w->path), used * 100 / total, fr, us);
+    } else if (!strcasecmp(w->path, "RAM:")) {                         /* the RAM disk: what it holds */
         double used = 0;
         DIR *d = opendir(hp);
         struct dirent *e;
